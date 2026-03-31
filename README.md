@@ -1,5 +1,8 @@
 # porter
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/catgoose/porter.svg)](https://pkg.go.dev/github.com/catgoose/porter)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Authorization middleware, CSRF protection, and session settings for
 [Echo](https://echo.labstack.com). Works with or without an external auth
 provider (like [crooner](https://github.com/catgoose/crooner)).
