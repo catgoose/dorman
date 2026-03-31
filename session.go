@@ -15,8 +15,13 @@ const settingsContextKey = "sessionSettings"
 
 // SessionConfig holds session middleware configuration.
 type SessionConfig struct {
-	CookieName string       // defaults to "porter_session_id"
-	Logger     *slog.Logger // defaults to slog.Default()
+	// CookieName is the name of the cookie used to store the session ID.
+	// Defaults to "porter_session_id" when empty.
+	CookieName string
+
+	// Logger is used for error reporting during session loading.
+	// Defaults to slog.Default() when nil.
+	Logger *slog.Logger
 }
 
 func (cfg SessionConfig) cookieName() string {
@@ -33,8 +38,11 @@ func (cfg SessionConfig) logger() *slog.Logger {
 	return slog.Default()
 }
 
-// SessionSettingsProvider is the subset of session-settings operations that
-// the middleware needs: look up, create-or-update, and touch a row.
+// SessionSettingsProvider is the interface for session-settings persistence.
+// Implementations typically back this with a database table keyed on the
+// session UUID. The middleware calls [SessionSettingsProvider.GetByUUID] on
+// every request, [SessionSettingsProvider.Upsert] when creating defaults, and
+// [SessionSettingsProvider.Touch] to bump the timestamp once per day.
 type SessionSettingsProvider interface {
 	GetByUUID(ctx context.Context, uuid string) (*SessionSettings, error)
 	Upsert(ctx context.Context, s *SessionSettings) error
@@ -42,13 +50,18 @@ type SessionSettingsProvider interface {
 }
 
 // SessionIDFunc returns the session identifier for the current request.
-// When nil, the middleware falls back to a random cookie-based session ID.
+// Pass a function that extracts the session ID from an external auth provider
+// (e.g. crooner.SessionID). When nil or when the function returns an empty
+// string, the middleware falls back to a random cookie-based session ID.
 type SessionIDFunc func(c echo.Context) string
 
-// SessionSettingsMiddleware loads per-session settings and stores them on the
-// echo context. The session ID comes from idFunc (e.g. Crooner's SCS token).
-// When idFunc is nil or returns an empty string, the middleware falls back to
-// a random cookie-based session ID.
+// SessionSettingsMiddleware returns Echo middleware that loads per-session
+// settings and stores them on the echo context for downstream handlers.
+//
+// The session ID comes from idFunc (e.g. crooner's session token). When idFunc
+// is nil or returns an empty string, the middleware creates a random
+// cookie-based session ID automatically. Pass optional [SessionConfig] to
+// override the cookie name or logger.
 func SessionSettingsMiddleware(repo SessionSettingsProvider, idFunc SessionIDFunc, cfgs ...SessionConfig) echo.MiddlewareFunc {
 	var cfg SessionConfig
 	if len(cfgs) > 0 {

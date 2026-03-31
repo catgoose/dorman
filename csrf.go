@@ -1,3 +1,10 @@
+// Package porter provides authorization middleware, CSRF protection, and
+// session settings for Echo applications.
+//
+// Porter is designed around small interfaces so that each concern (session
+// storage, identity, authorization) can be satisfied by different backends.
+// Crooner's SessionManager, for example, directly satisfies [CSRFSessionStore],
+// but any implementation that can get and set string values will work.
 package porter
 
 import (
@@ -53,8 +60,17 @@ func (CookieCSRFStore) Set(c echo.Context, key string, value any) error {
 
 // CSRFConfig holds CSRF middleware configuration.
 type CSRFConfig struct {
-	PerRequestPaths  []string
-	ExemptPaths      []string
+	// PerRequestPaths lists URL paths that receive a fresh CSRF token on
+	// every safe (GET/HEAD/OPTIONS) request, useful for one-time-use forms.
+	PerRequestPaths []string
+
+	// ExemptPaths lists URL paths that skip CSRF validation entirely.
+	// Typically includes OAuth callback and logout endpoints.
+	ExemptPaths []string
+
+	// RotatePerRequest, when true, generates a new token on every safe
+	// request regardless of path. When false, the token is reused until
+	// a per-request path triggers rotation.
 	RotatePerRequest bool
 }
 
