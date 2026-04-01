@@ -85,11 +85,6 @@ func main() {
 }
 ```
 
-## CSRF protection
-
-Porter does not include CSRF middleware. For CSRF protection, use
-[gorilla/csrf](https://github.com/gorilla/csrf) or a similar dedicated library.
-
 ## Authorization
 
 Porter provides identity extraction and role-based authorization middleware.
@@ -344,30 +339,6 @@ Porter is the warm, comfortable, widely-practiced violation. But at least it's a
        |   handler      |  Application logic
        +---------------+
 ```
-
-### Where porter fits in the dothog ecosystem
-
-```
-                        ┌──────────────────────────────────────┐
-                        │              dothog app              │
-                        └──────────┬───────────────────────────┘
-                                   │
-          ┌────────────┬───────────┼───────────┬────────────┐
-          │            │           │           │            │
-     ┌────v────┐  ┌────v────┐ ┌───v───┐  ┌───v────┐  ┌────v────┐
-     │ crooner │  │ *porter*│ │fraggle│  │ tavern │  │promolog │
-     │  auth   │  │  authz  │ │  sql  │  │  sse   │  │  logs   │
-     └────┬────┘  └─────────┘ └───────┘  └────────┘  └─────────┘
-          │
-          │ identity on ctx
-          v
-       porter reads it
-```
-
-Porter sits in the middleware chain between authentication (crooner) and your
-handlers. Crooner answers "who are you?", porter answers "are you allowed?"
-and "what are your preferences?" Neither library depends on the other — porter
-works standalone with any `IdentityProvider` implementation.
 
 ## License
 
