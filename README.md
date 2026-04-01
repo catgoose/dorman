@@ -12,6 +12,43 @@ applications. Works with or without an external auth provider (like
 All middleware uses the standard `func(http.Handler) http.Handler` signature,
 so it composes with any router or framework that supports net/http middleware.
 
+## Why
+
+**Without porter:**
+
+```go
+func settingsMiddleware(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        cookie, err := r.Cookie("app_session_id")
+        if err != nil {
+            id := uuid.New().String()
+            http.SetCookie(w, &http.Cookie{Name: "app_session_id", Value: id, Path: "/", MaxAge: 86400 * 365})
+            cookie = &http.Cookie{Value: id}
+        }
+        settings, err := repo.GetByUUID(r.Context(), cookie.Value)
+        if err != nil {
+            settings = &SessionSettings{Theme: "light", Layout: "classic"}
+            repo.Upsert(r.Context(), settings)
+        }
+        ctx := context.WithValue(r.Context(), settingsKey{}, settings)
+        next.ServeHTTP(w, r.WithContext(ctx))
+    })
+}
+// Now add identity extraction, role checks, context accessors...
+```
+
+**With porter:**
+
+```go
+session := porter.SessionSettingsMiddleware(repo, nil)
+auth := porter.RequireAuth(provider)
+handler := auth(session(mux))
+
+// In any handler:
+settings := porter.GetSessionSettings(r) // theme, layout, extras
+identity := porter.GetIdentity(r)        // subject, roles
+```
+
 ## Install
 
 ```bash
