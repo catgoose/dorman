@@ -7,7 +7,7 @@
 
 > Sessions are the server remembering you. This is a violation. It is a warm, comfortable, widely-practiced violation, like jaywalking or using `!important` in CSS.
 >
-> -- The Wisdom of the Uniform Interface, Dothog Manifesto
+> -- The Wisdom of the Uniform Interface
 
 Session settings middleware and identity helpers for Go `net/http`
 applications. Works with or without an external auth provider (like
@@ -145,7 +145,7 @@ provider := porter.ContextIdentityProvider{ContextKey: myAuthKey{}}
 
 > What you gained is a 32-byte cookie and the illusion of continuity. Whether this trade was worth it is between you and your load balancer.
 >
-> -- The Wisdom of the Uniform Interface, Dothog Manifesto
+> -- The Wisdom of the Uniform Interface
 
 Porter provides per-session user preferences (theme, layout, etc.) backed by
 a `SessionSettingsProvider` repository. The server remembering you, on purpose, with intention.
@@ -226,7 +226,7 @@ err := settings.UnmarshalExtra(jsonStr)
 
 > A media type is a COVENANT. A sacred compact. A pinky promise between systems.
 >
-> -- The Wisdom of the Uniform Interface, Dothog Manifesto
+> -- The Wisdom of the Uniform Interface
 
 The UUID cookie is that pinky promise -- a compact between the browser and your session store. Implement this interface to back session settings with your storage layer
 (SQL, Redis, in-memory, etc.):
