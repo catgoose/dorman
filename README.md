@@ -5,8 +5,8 @@
 
 ![porter](https://raw.githubusercontent.com/catgoose/screenshots/main/porter/porter.png)
 
-Authorization middleware, CSRF protection, and session settings for
-`net/http`. Works with or without an external auth provider (like
+Session settings middleware and identity helpers for Go `net/http`
+applications. Works with or without an external auth provider (like
 [crooner](https://github.com/catgoose/crooner)).
 
 All middleware uses the standard `func(http.Handler) http.Handler` signature,
@@ -31,14 +31,14 @@ import (
 func main() {
     mux := http.NewServeMux()
 
-    // CSRF protection with cookie-based token store
-    csrf := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})
-
     // Session settings (requires a SessionSettingsProvider implementation)
     session := porter.SessionSettingsMiddleware(repo, nil)
 
-    // Compose middleware: session wraps csrf wraps mux
-    handler := session(csrf(mux))
+    // Auth middleware
+    auth := porter.RequireAuth(provider)
+
+    // Compose middleware
+    handler := auth(session(mux))
 
     http.ListenAndServe(":8080", handler)
 }
@@ -46,88 +46,8 @@ func main() {
 
 ## CSRF protection
 
-The `CSRF` function returns middleware that generates tokens on safe methods
-(GET, HEAD, OPTIONS, TRACE) and validates them on unsafe methods (POST, PUT,
-DELETE, PATCH). Tokens are read from the `X-CSRF-Token` header first, then the
-`_csrf` form value.
-
-### Configuration
-
-```go
-csrf := porter.CSRF(store, porter.CSRFConfig{
-    // Paths that skip CSRF validation entirely (login, OAuth callbacks).
-    ExemptPaths: []string{"/login", "/callback", "/logout"},
-
-    // Paths that get a fresh token on every GET (one-time-use forms).
-    PerRequestPaths: []string{"/transfer"},
-
-    // Rotate the token on every safe request, globally.
-    RotatePerRequest: false,
-})
-handler := csrf(mux)
-```
-
-### CSRFConfig
-
-| Field              | Type       | Description                                                                 |
-|--------------------|------------|-----------------------------------------------------------------------------|
-| `ExemptPaths`      | `[]string` | Paths that skip CSRF validation entirely. Prefix matching is applied.       |
-| `PerRequestPaths`  | `[]string` | Paths that get a fresh token on every safe request (exact match).           |
-| `RotatePerRequest` | `bool`     | When true, rotate the token on every safe request regardless of path.       |
-
-### Reading the token in handlers
-
-The middleware stores the token on the request context. Use `GetCSRFToken` to
-retrieve it:
-
-```go
-mux.HandleFunc("GET /form", func(w http.ResponseWriter, r *http.Request) {
-    token := porter.GetCSRFToken(r)
-    tmpl.Execute(w, map[string]any{
-        "CSRFToken": token,
-    })
-})
-```
-
-In your form:
-
-```html
-<form method="POST" action="/submit">
-    <input type="hidden" name="_csrf" value="{{.CSRFToken}}">
-    <!-- fields -->
-</form>
-```
-
-### CSRFSessionStore interface
-
-Any session backend that implements `Get` and `Set` can be used as the CSRF
-token store:
-
-```go
-type CSRFSessionStore interface {
-    Get(r *http.Request, key string) (any, error)
-    Set(w http.ResponseWriter, r *http.Request, key string, value any) error
-}
-```
-
-This is compatible with crooner's session manager out of the box. Crooner's
-`SessionManager` has the same `Get` and `Set` signatures, so any crooner
-session manager (`*SCSManager`, custom implementations, etc.) satisfies
-`CSRFSessionStore` directly -- no wrapper needed.
-
-### CookieCSRFStore
-
-For apps that do not have a server-side session store, `CookieCSRFStore` stores
-the CSRF token in an `HttpOnly` cookie named `_csrf`:
-
-```go
-handler := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})(mux)
-```
-
-### Nil store
-
-When the session store is nil, the CSRF middleware is a no-op. This is useful
-for conditionally disabling CSRF in development or testing.
+Porter does not include CSRF middleware. For CSRF protection, use
+[gorilla/csrf](https://github.com/gorilla/csrf) or a similar dedicated library.
 
 ## Authorization
 
@@ -262,35 +182,15 @@ functions:
 
 | Function              | Returns              | Description                              |
 |-----------------------|----------------------|------------------------------------------|
-| `GetCSRFToken(r)`     | `string`             | CSRF token set by the CSRF middleware.   |
 | `GetSessionSettings(r)` | `*SessionSettings` | Session settings from the middleware.    |
 | `GetIdentity(r)`      | `Identity`           | Identity set by auth middleware.         |
 
 ## With crooner
 
 [Crooner](https://github.com/catgoose/crooner) handles authentication (OIDC,
-OAuth2, session management). Porter layers on top for CSRF, session settings,
-and authorization. The two libraries share the same interface conventions, so
+OAuth2, session management). Porter layers on top for session settings and
+authorization. The two libraries share the same interface conventions, so
 wiring them together requires no adapters or glue code.
-
-### CSRF with crooner's session manager
-
-```go
-sm, scsMgr, err := crooner.NewSCSManager(
-    crooner.WithPersistentCookieName(secret, "myapp"),
-    crooner.WithLifetime(12 * time.Hour),
-    crooner.WithStore(redisStore),
-)
-if err != nil {
-    log.Fatal(err)
-}
-
-// sm satisfies porter.CSRFSessionStore -- pass it directly.
-csrf := porter.CSRF(sm, porter.CSRFConfig{
-    ExemptPaths: []string{"/login", "/callback", "/logout"},
-})
-handler := csrf(mux)
-```
 
 ### Session settings with crooner's session ID
 
@@ -321,13 +221,13 @@ For apps that do not need external authentication, porter works standalone:
 ```go
 mux := http.NewServeMux()
 
-// CSRF with the built-in cookie store.
-csrf := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})
-
 // Session settings with auto-generated cookie IDs.
 session := porter.SessionSettingsMiddleware(repo, nil)
 
-handler := session(csrf(mux))
+// Auth middleware (if needed).
+auth := porter.RequireAuth(provider)
+
+handler := auth(session(mux))
 ```
 
 ## Architecture
@@ -344,7 +244,7 @@ handler := session(csrf(mux))
                | identity on context
        +-------v-------+
        |   porter       |  "What can you do?"
-       |                |  CSRF / session settings / authorization
+       |                |  session settings / authorization
        +-------+-------+
                |
        +-------v-------+

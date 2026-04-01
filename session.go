@@ -1,3 +1,9 @@
+// Package porter provides session settings middleware and identity/auth
+// helpers for net/http applications.
+//
+// Porter is designed around small interfaces so that each concern (session
+// storage, identity, authorization) can be satisfied by different backends.
+// For CSRF protection, use gorilla/csrf or a similar dedicated library.
 package porter
 
 import (
