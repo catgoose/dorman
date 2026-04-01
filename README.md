@@ -6,8 +6,11 @@
 ![porter](https://raw.githubusercontent.com/catgoose/screenshots/main/porter/porter.png)
 
 Authorization middleware, CSRF protection, and session settings for
-[Echo](https://echo.labstack.com). Works with or without an external auth
-provider (like [crooner](https://github.com/catgoose/crooner)).
+`net/http`. Works with or without an external auth provider (like
+[crooner](https://github.com/catgoose/crooner)).
+
+All middleware uses the standard `func(http.Handler) http.Handler` signature,
+so it composes with any router or framework that supports net/http middleware.
 
 ## Install
 
@@ -21,26 +24,29 @@ go get github.com/catgoose/porter
 package main
 
 import (
+    "net/http"
     "github.com/catgoose/porter"
-    "github.com/labstack/echo/v4"
 )
 
 func main() {
-    e := echo.New()
+    mux := http.NewServeMux()
 
     // CSRF protection with cookie-based token store
-    e.Use(porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{}))
+    csrf := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})
 
     // Session settings (requires a SessionSettingsProvider implementation)
-    e.Use(porter.SessionSettingsMiddleware(repo, nil))
+    session := porter.SessionSettingsMiddleware(repo, nil)
 
-    e.Logger.Fatal(e.Start(":8080"))
+    // Compose middleware: session wraps csrf wraps mux
+    handler := session(csrf(mux))
+
+    http.ListenAndServe(":8080", handler)
 }
 ```
 
 ## CSRF protection
 
-The `CSRF` function returns Echo middleware that generates tokens on safe methods
+The `CSRF` function returns middleware that generates tokens on safe methods
 (GET, HEAD, OPTIONS, TRACE) and validates them on unsafe methods (POST, PUT,
 DELETE, PATCH). Tokens are read from the `X-CSRF-Token` header first, then the
 `_csrf` form value.
@@ -48,7 +54,7 @@ DELETE, PATCH). Tokens are read from the `X-CSRF-Token` header first, then the
 ### Configuration
 
 ```go
-e.Use(porter.CSRF(store, porter.CSRFConfig{
+csrf := porter.CSRF(store, porter.CSRFConfig{
     // Paths that skip CSRF validation entirely (login, OAuth callbacks).
     ExemptPaths: []string{"/login", "/callback", "/logout"},
 
@@ -57,7 +63,8 @@ e.Use(porter.CSRF(store, porter.CSRFConfig{
 
     // Rotate the token on every safe request, globally.
     RotatePerRequest: false,
-}))
+})
+handler := csrf(mux)
 ```
 
 ### CSRFConfig
@@ -68,14 +75,15 @@ e.Use(porter.CSRF(store, porter.CSRFConfig{
 | `PerRequestPaths`  | `[]string` | Paths that get a fresh token on every safe request (exact match).           |
 | `RotatePerRequest` | `bool`     | When true, rotate the token on every safe request regardless of path.       |
 
-### Reading the token in templates
+### Reading the token in handlers
 
-The middleware sets the token on the echo context under `"csrf_token"`:
+The middleware stores the token on the request context. Use `GetCSRFToken` to
+retrieve it:
 
 ```go
-e.GET("/form", func(c echo.Context) error {
-    token := c.Get("csrf_token").(string)
-    return c.Render(http.StatusOK, "form.html", map[string]any{
+mux.HandleFunc("GET /form", func(w http.ResponseWriter, r *http.Request) {
+    token := porter.GetCSRFToken(r)
+    tmpl.Execute(w, map[string]any{
         "CSRFToken": token,
     })
 })
@@ -97,8 +105,8 @@ token store:
 
 ```go
 type CSRFSessionStore interface {
-    Get(c echo.Context, key string) (any, error)
-    Set(c echo.Context, key string, value any) error
+    Get(r *http.Request, key string) (any, error)
+    Set(w http.ResponseWriter, r *http.Request, key string, value any) error
 }
 ```
 
@@ -113,13 +121,64 @@ For apps that do not have a server-side session store, `CookieCSRFStore` stores
 the CSRF token in an `HttpOnly` cookie named `_csrf`:
 
 ```go
-e.Use(porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{}))
+handler := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})(mux)
 ```
 
 ### Nil store
 
 When the session store is nil, the CSRF middleware is a no-op. This is useful
 for conditionally disabling CSRF in development or testing.
+
+## Authorization
+
+Porter provides identity extraction and role-based authorization middleware.
+
+### IdentityProvider interface
+
+```go
+type IdentityProvider interface {
+    GetIdentity(r *http.Request) (Identity, error)
+}
+```
+
+### RequireAuth
+
+Rejects unauthenticated requests with 401. The identity is stored on the
+request context for downstream handlers:
+
+```go
+handler := porter.RequireAuth(provider)(mux)
+
+// In a handler:
+mux.HandleFunc("GET /me", func(w http.ResponseWriter, r *http.Request) {
+    id := porter.GetIdentity(r)
+    fmt.Fprintf(w, "Hello, %s", id.Subject())
+})
+```
+
+### RequireRole / RequireAnyRole
+
+Role-based access control. Returns 401 for unauthenticated requests and 403
+when the identity lacks the required role(s):
+
+```go
+adminOnly := porter.RequireRole(provider, "admin")
+handler := adminOnly(mux)
+
+editorOrAdmin := porter.RequireAnyRole(provider, "admin", "editor")
+handler := editorOrAdmin(mux)
+```
+
+### ContextIdentityProvider
+
+Reads identity from the request context using a typed key. Use this when your
+auth middleware stores identity on the request context:
+
+```go
+type myAuthKey struct{}
+
+provider := porter.ContextIdentityProvider{ContextKey: myAuthKey{}}
+```
 
 ## Session settings
 
@@ -130,7 +189,7 @@ a `SessionSettingsProvider` repository.
 
 ```go
 // repo implements porter.SessionSettingsProvider
-e.Use(porter.SessionSettingsMiddleware(repo, nil))
+handler := porter.SessionSettingsMiddleware(repo, nil)(mux)
 ```
 
 When the second argument (`SessionIDFunc`) is nil, porter generates a random
@@ -139,9 +198,9 @@ cookie-based session ID automatically.
 ### Reading settings in handlers
 
 ```go
-e.GET("/dashboard", func(c echo.Context) error {
-    settings := porter.GetSessionSettings(c)
-    return c.Render(http.StatusOK, "dashboard.html", map[string]any{
+mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
+    settings := porter.GetSessionSettings(r)
+    tmpl.Execute(w, map[string]any{
         "Theme":  settings.Theme,
         "Layout": settings.Layout,
     })
@@ -196,6 +255,17 @@ const (
 `NewDefaultSettings(uuid)` returns a `*SessionSettings` populated with these
 defaults.
 
+## Context accessors
+
+Porter stores values on the request context and provides type-safe accessor
+functions:
+
+| Function              | Returns              | Description                              |
+|-----------------------|----------------------|------------------------------------------|
+| `GetCSRFToken(r)`     | `string`             | CSRF token set by the CSRF middleware.   |
+| `GetSessionSettings(r)` | `*SessionSettings` | Session settings from the middleware.    |
+| `GetIdentity(r)`      | `Identity`           | Identity set by auth middleware.         |
+
 ## With crooner
 
 [Crooner](https://github.com/catgoose/crooner) handles authentication (OIDC,
@@ -216,9 +286,10 @@ if err != nil {
 }
 
 // sm satisfies porter.CSRFSessionStore -- pass it directly.
-e.Use(porter.CSRF(sm, porter.CSRFConfig{
+csrf := porter.CSRF(sm, porter.CSRFConfig{
     ExemptPaths: []string{"/login", "/callback", "/logout"},
-}))
+})
+handler := csrf(mux)
 ```
 
 ### Session settings with crooner's session ID
@@ -229,13 +300,14 @@ sessions, read the SCS token from the request so that session settings are
 tied to the authenticated session rather than a separate cookie:
 
 ```go
-e.Use(porter.SessionSettingsMiddleware(repo, func(c echo.Context) string {
-    cookie, err := c.Cookie(sm.GetCookieName())
+session := porter.SessionSettingsMiddleware(repo, func(r *http.Request) string {
+    cookie, err := r.Cookie(sm.GetCookieName())
     if err != nil || cookie.Value == "" {
         return "" // falls back to porter's random cookie ID
     }
     return cookie.Value
-}))
+})
+handler := session(mux)
 ```
 
 When the function returns an empty string (no session cookie yet), porter
@@ -247,35 +319,37 @@ unauthenticated visitors still get session settings.
 For apps that do not need external authentication, porter works standalone:
 
 ```go
-e := echo.New()
+mux := http.NewServeMux()
 
 // CSRF with the built-in cookie store.
-e.Use(porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{}))
+csrf := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})
 
 // Session settings with auto-generated cookie IDs.
-e.Use(porter.SessionSettingsMiddleware(repo, nil))
+session := porter.SessionSettingsMiddleware(repo, nil)
+
+handler := session(csrf(mux))
 ```
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────┐
-│             HTTP Request             │
-└──────────────┬───────────────────────┘
-               │
-       ┌───────▼───────┐
-       │   crooner      │  "Who are you?"
-       │   (optional)   │  OIDC / OAuth2 / session login
-       └───────┬───────┘
-               │ identity on context
-       ┌───────▼───────┐
-       │   porter       │  "What can you do?"
-       │                │  CSRF · session settings
-       └───────┬───────┘
-               │
-       ┌───────▼───────┐
-       │   handler      │  Application logic
-       └───────────────┘
++--------------------------------------+
+|             HTTP Request             |
++--------------+-----------------------+
+               |
+       +-------v-------+
+       |   crooner      |  "Who are you?"
+       |   (optional)   |  OIDC / OAuth2 / session login
+       +-------+-------+
+               | identity on context
+       +-------v-------+
+       |   porter       |  "What can you do?"
+       |                |  CSRF / session settings / authorization
+       +-------+-------+
+               |
+       +-------v-------+
+       |   handler      |  Application logic
+       +---------------+
 ```
 
 ## License

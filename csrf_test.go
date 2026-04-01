@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/require"
 )
 
@@ -13,14 +12,14 @@ type mockSessionManager struct {
 	data map[string]any
 }
 
-func (m *mockSessionManager) Get(c echo.Context, key string) (any, error) {
+func (m *mockSessionManager) Get(_ *http.Request, key string) (any, error) {
 	if m.data == nil {
 		return nil, nil
 	}
 	return m.data[key], nil
 }
 
-func (m *mockSessionManager) Set(c echo.Context, key string, value any) error {
+func (m *mockSessionManager) Set(_ http.ResponseWriter, _ *http.Request, key string, value any) error {
 	if m.data == nil {
 		m.data = make(map[string]any)
 	}
@@ -28,35 +27,19 @@ func (m *mockSessionManager) Set(c echo.Context, key string, value any) error {
 	return nil
 }
 
-func (m *mockSessionManager) Delete(c echo.Context, key string) error {
-	delete(m.data, key)
-	return nil
-}
-
-func (m *mockSessionManager) Clear(c echo.Context) error {
-	m.data = nil
-	return nil
-}
-
-func (m *mockSessionManager) Invalidate(c echo.Context) error {
-	return nil
-}
-
-func (m *mockSessionManager) ClearInvalidate(c echo.Context) error {
-	m.data = nil
-	return nil
+func applyMiddleware(mw func(http.Handler) http.Handler, handler http.HandlerFunc) http.Handler {
+	return mw(handler)
 }
 
 func TestCSRF_NilSessionManager_NoOp(t *testing.T) {
-	e := echo.New()
-	e.Use(CSRF(nil, CSRFConfig{}))
-	e.GET("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "ok")
+	handler := applyMiddleware(CSRF(nil, CSRFConfig{}), func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.Equal(t, "ok", rec.Body.String())
@@ -64,20 +47,19 @@ func TestCSRF_NilSessionManager_NoOp(t *testing.T) {
 
 func TestCSRF_GET_CreatesToken(t *testing.T) {
 	sm := &mockSessionManager{data: make(map[string]any)}
-	e := echo.New()
-	e.Use(CSRF(sm, CSRFConfig{}))
-	e.GET("/", func(c echo.Context) error {
-		token, ok := c.Get(csrfContextKey).(string)
-		require.True(t, ok)
-		require.NotEmpty(t, token)
-		return c.String(http.StatusOK, token)
+	var gotToken string
+	handler := applyMiddleware(CSRF(sm, CSRFConfig{}), func(w http.ResponseWriter, r *http.Request) {
+		gotToken = GetCSRFToken(r)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(gotToken))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
+	require.NotEmpty(t, gotToken)
 	token := rec.Body.String()
 	require.Len(t, token, 64)
 	sessionToken, _ := sm.Get(nil, csrfTokenSessionKey)
@@ -86,86 +68,86 @@ func TestCSRF_GET_CreatesToken(t *testing.T) {
 
 func TestCSRF_POST_WithoutToken_403(t *testing.T) {
 	sm := &mockSessionManager{data: make(map[string]any)}
-	e := echo.New()
-	e.Use(CSRF(sm, CSRFConfig{}))
-	e.POST("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "ok")
+	handler := applyMiddleware(CSRF(sm, CSRFConfig{}), func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestCSRF_POST_WithValidToken_200(t *testing.T) {
 	sm := &mockSessionManager{data: make(map[string]any)}
-	require.NoError(t, sm.Set(nil, csrfTokenSessionKey, "abc123token"))
-	e := echo.New()
-	e.Use(CSRF(sm, CSRFConfig{}))
-	e.POST("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "ok")
+	require.NoError(t, sm.Set(nil, nil, csrfTokenSessionKey, "abc123token"))
+	handler := applyMiddleware(CSRF(sm, CSRFConfig{}), func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-CSRF-Token", "abc123token")
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestCSRF_POST_WithWrongToken_403(t *testing.T) {
 	sm := &mockSessionManager{data: make(map[string]any)}
-	require.NoError(t, sm.Set(nil, csrfTokenSessionKey, "righttoken"))
-	e := echo.New()
-	e.Use(CSRF(sm, CSRFConfig{}))
-	e.POST("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "ok")
+	require.NoError(t, sm.Set(nil, nil, csrfTokenSessionKey, "righttoken"))
+	handler := applyMiddleware(CSRF(sm, CSRFConfig{}), func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-CSRF-Token", "wrongtoken")
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 func TestCSRF_ExemptPath_SkipsValidation(t *testing.T) {
 	sm := &mockSessionManager{data: make(map[string]any)}
-	e := echo.New()
-	e.Use(CSRF(sm, CSRFConfig{ExemptPaths: []string{"/login", "/callback", "/logout"}}))
-	e.POST("/login", func(c echo.Context) error {
-		return c.String(http.StatusOK, "ok")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
 	})
+	handler := CSRF(sm, CSRFConfig{ExemptPaths: []string{"/login", "/callback", "/logout"}})(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestCSRF_PerRequestPath_RotatesToken(t *testing.T) {
 	sm := &mockSessionManager{data: make(map[string]any)}
-	e := echo.New()
-	e.Use(CSRF(sm, CSRFConfig{PerRequestPaths: []string{"/form"}}))
-	e.GET("/form", func(c echo.Context) error {
-		token, _ := c.Get(csrfContextKey).(string)
-		return c.String(http.StatusOK, token)
+	var lastToken string
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /form", func(w http.ResponseWriter, r *http.Request) {
+		lastToken = GetCSRFToken(r)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(lastToken))
 	})
+	handler := CSRF(sm, CSRFConfig{PerRequestPaths: []string{"/form"}})(mux)
 
 	req1 := httptest.NewRequest(http.MethodGet, "/form", nil)
 	rec1 := httptest.NewRecorder()
-	e.ServeHTTP(rec1, req1)
+	handler.ServeHTTP(rec1, req1)
 	require.Equal(t, http.StatusOK, rec1.Code)
 	token1 := rec1.Body.String()
 
 	req2 := httptest.NewRequest(http.MethodGet, "/form", nil)
 	rec2 := httptest.NewRecorder()
-	e.ServeHTTP(rec2, req2)
+	handler.ServeHTTP(rec2, req2)
 	require.Equal(t, http.StatusOK, rec2.Code)
 	token2 := rec2.Body.String()
 

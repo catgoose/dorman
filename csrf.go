@@ -1,5 +1,5 @@
 // Package porter provides authorization middleware, CSRF protection, and
-// session settings for Echo applications.
+// session settings for net/http applications.
 //
 // Porter is designed around small interfaces so that each concern (session
 // storage, identity, authorization) can be satisfied by different backends.
@@ -8,17 +8,19 @@
 package porter
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strings"
-
-	"github.com/labstack/echo/v4"
 )
 
 const csrfTokenSessionKey = "csrf_token"
-const csrfContextKey = "csrf_token"
+
+type csrfTokenKeyType struct{}
+
+var csrfTokenCtxKey csrfTokenKeyType
 
 var safeMethods = map[string]bool{
 	http.MethodGet:     true,
@@ -30,8 +32,8 @@ var safeMethods = map[string]bool{
 // CSRFSessionStore provides get/set for string session values.
 // Any session implementation (crooner, SCS, cookie-based, etc.) can satisfy this.
 type CSRFSessionStore interface {
-	Get(c echo.Context, key string) (any, error)
-	Set(c echo.Context, key string, value any) error
+	Get(r *http.Request, key string) (any, error)
+	Set(w http.ResponseWriter, r *http.Request, key string, value any) error
 }
 
 // CookieCSRFStore stores CSRF tokens in an HTTP cookie.
@@ -39,16 +41,16 @@ type CSRFSessionStore interface {
 // and have no server-side session store to pass to [CSRF].
 type CookieCSRFStore struct{}
 
-func (CookieCSRFStore) Get(c echo.Context, key string) (any, error) {
-	cookie, err := c.Cookie("_csrf")
+func (CookieCSRFStore) Get(r *http.Request, key string) (any, error) {
+	cookie, err := r.Cookie("_csrf")
 	if err != nil {
 		return nil, err
 	}
 	return cookie.Value, nil
 }
 
-func (CookieCSRFStore) Set(c echo.Context, key string, value any) error {
-	c.SetCookie(&http.Cookie{
+func (CookieCSRFStore) Set(w http.ResponseWriter, _ *http.Request, _ string, value any) error {
+	http.SetCookie(w, &http.Cookie{
 		Name:     "_csrf",
 		Value:    value.(string),
 		Path:     "/",
@@ -74,36 +76,50 @@ type CSRFConfig struct {
 	RotatePerRequest bool
 }
 
-// CSRF returns Echo middleware that generates and validates CSRF tokens using a session store.
+// GetCSRFToken returns the CSRF token from the request context.
+// Returns an empty string when no token has been set by the CSRF middleware.
+func GetCSRFToken(r *http.Request) string {
+	if v, ok := r.Context().Value(csrfTokenCtxKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// CSRF returns middleware that generates and validates CSRF tokens using a session store.
 // When ss is nil the middleware is a no-op.
-func CSRF(ss CSRFSessionStore, cfg CSRFConfig) echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
+func CSRF(ss CSRFSessionStore, cfg CSRFConfig) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if ss == nil {
-				return next(c)
+				next.ServeHTTP(w, r)
+				return
 			}
-			path := c.Request().URL.Path
+			path := r.URL.Path
 			if pathExempt(cfg.ExemptPaths, path) {
-				return next(c)
+				next.ServeHTTP(w, r)
+				return
 			}
-			if safeMethods[c.Request().Method] {
-				token, err := getOrCreateToken(c, ss, cfg, path)
+			if safeMethods[r.Method] {
+				token, err := getOrCreateToken(w, r, ss, cfg, path)
 				if err != nil {
-					return err
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+					return
 				}
-				c.Set(csrfContextKey, token)
-				return next(c)
+				r = r.WithContext(context.WithValue(r.Context(), csrfTokenCtxKey, token))
+				next.ServeHTTP(w, r)
+				return
 			}
-			reqToken := c.Request().Header.Get("X-CSRF-Token")
+			reqToken := r.Header.Get("X-CSRF-Token")
 			if reqToken == "" {
-				reqToken = c.Request().FormValue("_csrf")
+				reqToken = r.FormValue("_csrf")
 			}
-			sessionToken, _ := getSessionString(ss, c, csrfTokenSessionKey)
+			sessionToken, _ := getSessionString(ss, r, csrfTokenSessionKey)
 			if sessionToken == "" || subtle.ConstantTimeCompare([]byte(sessionToken), []byte(reqToken)) != 1 {
-				return c.NoContent(http.StatusForbidden)
+				http.Error(w, "", http.StatusForbidden)
+				return
 			}
-			return next(c)
-		}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -125,10 +141,10 @@ func pathPerRequest(paths []string, path string) bool {
 	return false
 }
 
-func getOrCreateToken(c echo.Context, ss CSRFSessionStore, cfg CSRFConfig, path string) (string, error) {
+func getOrCreateToken(w http.ResponseWriter, r *http.Request, ss CSRFSessionStore, cfg CSRFConfig, path string) (string, error) {
 	rotate := cfg.RotatePerRequest || pathPerRequest(cfg.PerRequestPaths, path)
 	if !rotate {
-		existing, err := getSessionString(ss, c, csrfTokenSessionKey)
+		existing, err := getSessionString(ss, r, csrfTokenSessionKey)
 		if err == nil && existing != "" {
 			return existing, nil
 		}
@@ -137,14 +153,14 @@ func getOrCreateToken(c echo.Context, ss CSRFSessionStore, cfg CSRFConfig, path 
 	if err != nil {
 		return "", err
 	}
-	if err := ss.Set(c, csrfTokenSessionKey, token); err != nil {
+	if err := ss.Set(w, r, csrfTokenSessionKey, token); err != nil {
 		return "", err
 	}
 	return token, nil
 }
 
-func getSessionString(ss CSRFSessionStore, c echo.Context, key string) (string, error) {
-	val, err := ss.Get(c, key)
+func getSessionString(ss CSRFSessionStore, r *http.Request, key string) (string, error) {
+	val, err := ss.Get(r, key)
 	if err != nil {
 		return "", err
 	}

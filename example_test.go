@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 
 	"github.com/catgoose/porter"
-	"github.com/labstack/echo/v4"
 )
 
 // memorySettingsRepo is a minimal in-memory SessionSettingsProvider for examples.
@@ -38,28 +37,26 @@ type memoryCSRFStore struct {
 	data map[string]any
 }
 
-func (m *memoryCSRFStore) Get(_ echo.Context, key string) (any, error) {
+func (m *memoryCSRFStore) Get(_ *http.Request, key string) (any, error) {
 	return m.data[key], nil
 }
 
-func (m *memoryCSRFStore) Set(_ echo.Context, key string, value any) error {
+func (m *memoryCSRFStore) Set(_ http.ResponseWriter, _ *http.Request, key string, value any) error {
 	m.data[key] = value
 	return nil
 }
 
 func ExampleCSRF() {
-	e := echo.New()
-
 	store := &memoryCSRFStore{data: make(map[string]any)}
-	e.Use(porter.CSRF(store, porter.CSRFConfig{}))
-	e.GET("/", func(c echo.Context) error {
-		token := c.Get("csrf_token").(string)
-		return c.String(http.StatusOK, fmt.Sprintf("token_length=%d", len(token)))
-	})
+	handler := porter.CSRF(store, porter.CSRFConfig{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := porter.GetCSRFToken(r)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "token_length=%d", len(token))
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -69,19 +66,19 @@ func ExampleCSRF() {
 }
 
 func ExampleCSRF_exemptPaths() {
-	e := echo.New()
-
 	store := &memoryCSRFStore{data: make(map[string]any)}
-	e.Use(porter.CSRF(store, porter.CSRFConfig{
-		ExemptPaths: []string{"/webhook"},
-	}))
-	e.POST("/webhook", func(c echo.Context) error {
-		return c.String(http.StatusOK, "accepted")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /webhook", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("accepted"))
 	})
+	handler := porter.CSRF(store, porter.CSRFConfig{
+		ExemptPaths: []string{"/webhook"},
+	})(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/webhook", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -91,17 +88,14 @@ func ExampleCSRF_exemptPaths() {
 }
 
 func ExampleCSRF_nilStore() {
-	e := echo.New()
-
-	// Passing nil disables CSRF — useful in development or testing.
-	e.Use(porter.CSRF(nil, porter.CSRFConfig{}))
-	e.POST("/", func(c echo.Context) error {
-		return c.String(http.StatusOK, "no csrf")
-	})
+	handler := porter.CSRF(nil, porter.CSRFConfig{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("no csrf"))
+	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -111,17 +105,15 @@ func ExampleCSRF_nilStore() {
 }
 
 func ExampleCookieCSRFStore() {
-	e := echo.New()
-
-	e.Use(porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{}))
-	e.GET("/", func(c echo.Context) error {
-		token := c.Get("csrf_token").(string)
-		return c.String(http.StatusOK, fmt.Sprintf("token_length=%d", len(token)))
-	})
+	handler := porter.CSRF(porter.CookieCSRFStore{}, porter.CSRFConfig{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := porter.GetCSRFToken(r)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "token_length=%d", len(token))
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -131,18 +123,16 @@ func ExampleCookieCSRFStore() {
 }
 
 func ExampleSessionSettingsMiddleware() {
-	e := echo.New()
-
 	repo := &memorySettingsRepo{store: make(map[string]*porter.SessionSettings)}
-	e.Use(porter.SessionSettingsMiddleware(repo, nil))
-	e.GET("/", func(c echo.Context) error {
-		s := porter.GetSessionSettings(c)
-		return c.String(http.StatusOK, fmt.Sprintf("theme=%s layout=%s", s.Theme, s.Layout))
-	})
+	handler := porter.SessionSettingsMiddleware(repo, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := porter.GetSessionSettings(r)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "theme=%s layout=%s", s.Theme, s.Layout)
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -152,22 +142,20 @@ func ExampleSessionSettingsMiddleware() {
 }
 
 func ExampleSessionSettingsMiddleware_customConfig() {
-	e := echo.New()
-
 	repo := &memorySettingsRepo{store: make(map[string]*porter.SessionSettings)}
 	cfg := porter.SessionConfig{
 		CookieName: "my_app_session",
 		Logger:     slog.Default(),
 	}
-	e.Use(porter.SessionSettingsMiddleware(repo, nil, cfg))
-	e.GET("/", func(c echo.Context) error {
-		s := porter.GetSessionSettings(c)
-		return c.String(http.StatusOK, fmt.Sprintf("theme=%s", s.Theme))
-	})
+	handler := porter.SessionSettingsMiddleware(repo, nil, cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := porter.GetSessionSettings(r)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "theme=%s", s.Theme)
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -177,24 +165,22 @@ func ExampleSessionSettingsMiddleware_customConfig() {
 }
 
 func ExampleSessionSettingsMiddleware_withIDFunc() {
-	e := echo.New()
-
 	repo := &memorySettingsRepo{store: make(map[string]*porter.SessionSettings)}
 
 	// Use a custom function to extract the session ID from the request.
-	idFunc := func(c echo.Context) string {
-		return c.Request().Header.Get("X-Session-ID")
+	idFunc := func(r *http.Request) string {
+		return r.Header.Get("X-Session-ID")
 	}
-	e.Use(porter.SessionSettingsMiddleware(repo, idFunc))
-	e.GET("/", func(c echo.Context) error {
-		s := porter.GetSessionSettings(c)
-		return c.String(http.StatusOK, fmt.Sprintf("uuid=%s theme=%s", s.SessionUUID, s.Theme))
-	})
+	handler := porter.SessionSettingsMiddleware(repo, idFunc)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := porter.GetSessionSettings(r)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "uuid=%s theme=%s", s.SessionUUID, s.Theme)
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Header.Set("X-Session-ID", "user-123")
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Code)
 	fmt.Println(rec.Body.String())
@@ -204,18 +190,16 @@ func ExampleSessionSettingsMiddleware_withIDFunc() {
 }
 
 func ExampleGetSessionSettings() {
-	e := echo.New()
-
 	repo := &memorySettingsRepo{store: make(map[string]*porter.SessionSettings)}
-	e.Use(porter.SessionSettingsMiddleware(repo, nil))
-	e.GET("/", func(c echo.Context) error {
-		s := porter.GetSessionSettings(c)
-		return c.String(http.StatusOK, s.Theme)
-	})
+	handler := porter.SessionSettingsMiddleware(repo, nil)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := porter.GetSessionSettings(r)
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(s.Theme))
+	}))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
-	e.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 
 	fmt.Println(rec.Body.String())
 	// Output:

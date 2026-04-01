@@ -7,11 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	"github.com/labstack/echo/v4"
 )
 
-const settingsContextKey = "sessionSettings"
+type settingsKeyType struct{}
+
+var settingsCtxKey settingsKeyType
 
 // SessionConfig holds session middleware configuration.
 type SessionConfig struct {
@@ -53,30 +53,30 @@ type SessionSettingsProvider interface {
 // Pass a function that extracts the session ID from an external auth provider
 // (e.g. crooner.SessionID). When nil or when the function returns an empty
 // string, the middleware falls back to a random cookie-based session ID.
-type SessionIDFunc func(c echo.Context) string
+type SessionIDFunc func(r *http.Request) string
 
-// SessionSettingsMiddleware returns Echo middleware that loads per-session
-// settings and stores them on the echo context for downstream handlers.
+// SessionSettingsMiddleware returns middleware that loads per-session
+// settings and stores them on the request context for downstream handlers.
 //
 // The session ID comes from idFunc (e.g. crooner's session token). When idFunc
 // is nil or returns an empty string, the middleware creates a random
 // cookie-based session ID automatically. Pass optional [SessionConfig] to
 // override the cookie name or logger.
-func SessionSettingsMiddleware(repo SessionSettingsProvider, idFunc SessionIDFunc, cfgs ...SessionConfig) echo.MiddlewareFunc {
+func SessionSettingsMiddleware(repo SessionSettingsProvider, idFunc SessionIDFunc, cfgs ...SessionConfig) func(http.Handler) http.Handler {
 	var cfg SessionConfig
 	if len(cfgs) > 0 {
 		cfg = cfgs[0]
 	}
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			ctx := c.Request().Context()
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
 
 			sessionID := ""
 			if idFunc != nil {
-				sessionID = idFunc(c)
+				sessionID = idFunc(r)
 			}
 			if sessionID == "" {
-				sessionID = getOrCreateSessionCookie(c, cfg.cookieName())
+				sessionID = getOrCreateSessionCookie(w, r, cfg.cookieName())
 			}
 
 			settings, err := repo.GetByUUID(ctx, sessionID)
@@ -95,27 +95,27 @@ func SessionSettingsMiddleware(repo SessionSettingsProvider, idFunc SessionIDFun
 				_ = repo.Touch(ctx, sessionID)
 			}
 
-			c.Set(settingsContextKey, settings)
-			return next(c)
-		}
+			r = r.WithContext(context.WithValue(r.Context(), settingsCtxKey, settings))
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
-// GetSessionSettings returns the session settings from the echo context.
-func GetSessionSettings(c echo.Context) *SessionSettings {
-	if s, ok := c.Get(settingsContextKey).(*SessionSettings); ok {
+// GetSessionSettings returns the session settings from the request context.
+func GetSessionSettings(r *http.Request) *SessionSettings {
+	if s, ok := r.Context().Value(settingsCtxKey).(*SessionSettings); ok {
 		return s
 	}
 	return NewDefaultSettings("")
 }
 
 // getOrCreateSessionCookie reads the session cookie or creates a new random one.
-func getOrCreateSessionCookie(c echo.Context, cookieName string) string {
-	if cookie, err := c.Cookie(cookieName); err == nil && cookie.Value != "" {
+func getOrCreateSessionCookie(w http.ResponseWriter, r *http.Request, cookieName string) string {
+	if cookie, err := r.Cookie(cookieName); err == nil && cookie.Value != "" {
 		return cookie.Value
 	}
 	id := randomUUID()
-	c.SetCookie(&http.Cookie{
+	http.SetCookie(w, &http.Cookie{
 		Name:     cookieName,
 		Value:    id,
 		Path:     "/",

@@ -1,15 +1,14 @@
 package porter
 
 import (
+	"context"
 	"errors"
 	"net/http"
-
-	"github.com/labstack/echo/v4"
 )
 
-// IdentityContextKey is the echo.Context key where authorization middleware
-// stores the resolved [Identity]. Use [GetIdentity] to retrieve it.
-const IdentityContextKey = "porter.identity"
+type identityKeyType struct{}
+
+var identityCtxKey identityKeyType
 
 // Sentinel errors returned by authorization middleware and identity providers.
 var (
@@ -36,22 +35,22 @@ type SimpleIdentity struct {
 func (s SimpleIdentity) Subject() string { return s.ID }
 func (s SimpleIdentity) Roles() []string { return s.RoleList }
 
-// IdentityProvider extracts identity from a request context.
+// IdentityProvider extracts identity from a request.
 // Crooner's session satisfies this; porter also ships [ContextIdentityProvider]
 // for reading identity set by external auth middleware.
 type IdentityProvider interface {
-	GetIdentity(c echo.Context) (Identity, error)
+	GetIdentity(r *http.Request) (Identity, error)
 }
 
-// ContextIdentityProvider reads identity from a key on [echo.Context].
-// Use this when your auth middleware (like crooner) stores identity on the context.
+// ContextIdentityProvider reads identity from the request context using a typed key.
+// Use this when your auth middleware stores identity on the request context.
 type ContextIdentityProvider struct {
-	// ContextKey is the key used by auth middleware to store identity.
-	ContextKey string
+	// ContextKey is the context key used by auth middleware to store identity.
+	ContextKey any
 }
 
-func (p ContextIdentityProvider) GetIdentity(c echo.Context) (Identity, error) {
-	val := c.Get(p.ContextKey)
+func (p ContextIdentityProvider) GetIdentity(r *http.Request) (Identity, error) {
+	val := r.Context().Value(p.ContextKey)
 	if val == nil {
 		return nil, ErrNoIdentity
 	}
@@ -62,57 +61,60 @@ func (p ContextIdentityProvider) GetIdentity(c echo.Context) (Identity, error) {
 	return id, nil
 }
 
-// GetIdentity retrieves the [Identity] from the echo context. Returns nil when
+// GetIdentity retrieves the [Identity] from the request context. Returns nil when
 // no identity has been set by authorization middleware.
-func GetIdentity(c echo.Context) Identity {
-	id, _ := c.Get(IdentityContextKey).(Identity)
+func GetIdentity(r *http.Request) Identity {
+	id, _ := r.Context().Value(identityCtxKey).(Identity)
 	return id
 }
 
 // RequireAuth returns middleware that rejects unauthenticated requests with
-// 401 Unauthorized. Authenticated identities are stored on the context at
-// [IdentityContextKey] for downstream handlers.
-func RequireAuth(provider IdentityProvider) echo.MiddlewareFunc {
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			id, err := provider.GetIdentity(c)
+// 401 Unauthorized. Authenticated identities are stored on the request context
+// for downstream handlers via [GetIdentity].
+func RequireAuth(provider IdentityProvider) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, err := provider.GetIdentity(r)
 			if err != nil || id == nil {
-				return c.NoContent(http.StatusUnauthorized)
+				http.Error(w, "", http.StatusUnauthorized)
+				return
 			}
-			c.Set(IdentityContextKey, id)
-			return next(c)
-		}
+			r = r.WithContext(context.WithValue(r.Context(), identityCtxKey, id))
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
 // RequireRole returns middleware that requires the identity to have the given
 // role. Unauthenticated requests receive 401; authenticated requests missing the
 // role receive 403.
-func RequireRole(provider IdentityProvider, role string) echo.MiddlewareFunc {
+func RequireRole(provider IdentityProvider, role string) func(http.Handler) http.Handler {
 	return RequireAnyRole(provider, role)
 }
 
 // RequireAnyRole returns middleware that requires the identity to have at least
 // one of the given roles. Unauthenticated requests receive 401; authenticated
 // requests missing all roles receive 403.
-func RequireAnyRole(provider IdentityProvider, roles ...string) echo.MiddlewareFunc {
+func RequireAnyRole(provider IdentityProvider, roles ...string) func(http.Handler) http.Handler {
 	want := make(map[string]struct{}, len(roles))
 	for _, r := range roles {
 		want[r] = struct{}{}
 	}
-	return func(next echo.HandlerFunc) echo.HandlerFunc {
-		return func(c echo.Context) error {
-			id, err := provider.GetIdentity(c)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, err := provider.GetIdentity(r)
 			if err != nil || id == nil {
-				return c.NoContent(http.StatusUnauthorized)
+				http.Error(w, "", http.StatusUnauthorized)
+				return
 			}
-			for _, r := range id.Roles() {
-				if _, ok := want[r]; ok {
-					c.Set(IdentityContextKey, id)
-					return next(c)
+			for _, role := range id.Roles() {
+				if _, ok := want[role]; ok {
+					r = r.WithContext(context.WithValue(r.Context(), identityCtxKey, id))
+					next.ServeHTTP(w, r)
+					return
 				}
 			}
-			return c.NoContent(http.StatusForbidden)
-		}
+			http.Error(w, "", http.StatusForbidden)
+		})
 	}
 }
