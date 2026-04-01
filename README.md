@@ -5,52 +5,60 @@
 
 ![porter](https://raw.githubusercontent.com/catgoose/screenshots/main/porter/porter.png)
 
-> Sessions are the server remembering you. This is a violation. It is a warm, comfortable, widely-practiced violation, like jaywalking or using `!important` in CSS.
+> THE FOOL asked: "What is out-of-band information?" Out-of-band information is THE CONSPIRACY. It is the hidden knowledge. The secret handshake. The unspoken assumption.
 >
 > -- The Wisdom of the Uniform Interface
 
-Session settings middleware and identity helpers for Go `net/http`
-applications. Works with or without an external auth provider (like
-[crooner](https://github.com/catgoose/crooner)).
+Authorization, CSRF protection, and security header middleware for Go
+`net/http` applications. Porter guards the door — identity checks, role
+enforcement, request verification, and response hardening in standard
+`func(http.Handler) http.Handler` middleware.
 
-All middleware uses the standard `func(http.Handler) http.Handler` signature,
-so it composes with any router or framework that supports net/http middleware.
+Zero external dependencies. Works with any router or framework.
 
 ## Why
 
 **Without porter:**
 
 ```go
-func settingsMiddleware(next http.Handler) http.Handler {
-    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-        cookie, err := r.Cookie("app_session_id")
-        if err != nil {
-            id := uuid.New().String()
-            http.SetCookie(w, &http.Cookie{Name: "app_session_id", Value: id, Path: "/", MaxAge: 86400 * 365})
-            cookie = &http.Cookie{Value: id}
-        }
-        settings, err := repo.GetByUUID(r.Context(), cookie.Value)
-        if err != nil {
-            settings = &SessionSettings{Theme: "light", Layout: "classic"}
-            repo.Upsert(r.Context(), settings)
-        }
-        ctx := context.WithValue(r.Context(), settingsKey{}, settings)
-        next.ServeHTTP(w, r.WithContext(ctx))
-    })
+// Role checks scattered across handlers
+func adminHandler(w http.ResponseWriter, r *http.Request) {
+    id := getIdentityFromContext(r) // hope this exists
+    if id == nil {
+        http.Error(w, "", 401)
+        return
+    }
+    hasRole := false
+    for _, role := range id.Roles {
+        if role == "admin" { hasRole = true; break }
+    }
+    if !hasRole {
+        http.Error(w, "", 403)
+        return
+    }
+    // actual handler logic, finally
 }
-// Now add identity extraction, role checks, context accessors...
+
+// CSRF: pull in gorilla/csrf, configure separately
+// Security headers: set them inline, hope you didn't miss one
+// Every handler repeats the same boilerplate
 ```
 
 **With porter:**
 
 ```go
-session := porter.SessionSettingsMiddleware(repo, nil)
-auth := porter.RequireAuth(provider)
-handler := auth(session(mux))
+mux := http.NewServeMux()
 
-// In any handler:
-settings := porter.GetSessionSettings(r) // theme, layout, extras
-identity := porter.GetIdentity(r)        // subject, roles
+// Auth + roles in middleware, not in handlers
+admin := porter.RequireRole(provider, "admin")
+mux.Handle("GET /admin", admin(adminPage))
+
+// CSRF protection
+csrf := porter.CSRFProtect(porter.CSRFConfig{Key: secret})
+// Security headers with sensible defaults
+headers := porter.SecurityHeaders()
+
+handler := headers(csrf(porter.RequireAuth(provider)(mux)))
 ```
 
 ## Install
@@ -59,35 +67,7 @@ identity := porter.GetIdentity(r)        // subject, roles
 go get github.com/catgoose/porter
 ```
 
-## Quick start
-
-```go
-package main
-
-import (
-    "net/http"
-    "github.com/catgoose/porter"
-)
-
-func main() {
-    mux := http.NewServeMux()
-
-    // Session settings (requires a SessionSettingsProvider implementation)
-    session := porter.SessionSettingsMiddleware(repo, nil)
-
-    // Auth middleware
-    auth := porter.RequireAuth(provider)
-
-    // Compose middleware
-    handler := auth(session(mux))
-
-    http.ListenAndServe(":8080", handler)
-}
-```
-
 ## Authorization
-
-Porter provides identity extraction and role-based authorization middleware.
 
 ### IdentityProvider interface
 
@@ -97,13 +77,11 @@ type IdentityProvider interface {
 }
 ```
 
+Implement this interface to provide identity from any source — OIDC tokens,
+JWTs, database sessions, request headers. Porter doesn't care where identity
+comes from, only that it satisfies the interface.
+
 ### RequireAuth
-
-> THE FOOL asked: "What is out-of-band information?" Out-of-band information is THE CONSPIRACY. It is the hidden knowledge. The secret handshake. The unspoken assumption.
->
-> -- The Wisdom of the Uniform Interface
-
-Authentication is the one out-of-band assumption worth keeping. Porter makes it explicit: identity on the context, roles checked in middleware, no secret handshakes.
 
 Rejects unauthenticated requests with 401. The identity is stored on the
 request context for downstream handlers:
@@ -134,7 +112,7 @@ handler := editorOrAdmin(mux)
 ### ContextIdentityProvider
 
 Reads identity from the request context using a typed key. Use this when your
-auth middleware stores identity on the request context:
+auth middleware already stores identity on the context:
 
 ```go
 type myAuthKey struct{}
@@ -142,202 +120,179 @@ type myAuthKey struct{}
 provider := porter.ContextIdentityProvider{ContextKey: myAuthKey{}}
 ```
 
-## Session settings
-
-> What you gained is a 32-byte cookie and the illusion of continuity. Whether this trade was worth it is between you and your load balancer.
->
-> -- The Wisdom of the Uniform Interface
-
-Porter provides per-session user preferences (theme, layout, etc.) backed by
-a `SessionSettingsProvider` repository. The server remembering you, on purpose, with intention.
-
-### Setup
+### Identity interface
 
 ```go
-// repo implements porter.SessionSettingsProvider
-handler := porter.SessionSettingsMiddleware(repo, nil)(mux)
-```
-
-When the second argument (`SessionIDFunc`) is nil, porter generates a random
-cookie-based session ID automatically.
-
-### Reading settings in handlers
-
-```go
-mux.HandleFunc("GET /dashboard", func(w http.ResponseWriter, r *http.Request) {
-    settings := porter.GetSessionSettings(r)
-    tmpl.Execute(w, map[string]any{
-        "Theme":  settings.Theme,
-        "Layout": settings.Layout,
-    })
-})
-```
-
-### SessionConfig
-
-Optional configuration passed as a variadic argument to
-`SessionSettingsMiddleware`:
-
-| Field        | Type           | Default                | Description                        |
-|--------------|----------------|------------------------|------------------------------------|
-| `CookieName` | `string`      | `"porter_session_id"` | Name of the fallback session cookie. |
-| `Logger`     | `*slog.Logger` | `slog.Default()`      | Logger for error reporting.        |
-
-### SessionSettings
-
-The `SessionSettings` struct holds the persisted preferences:
-
-| Field         | Type                | Description                                  |
-|---------------|---------------------|----------------------------------------------|
-| `SessionUUID` | `string`            | The session identifier.                      |
-| `Theme`       | `string`            | UI theme (default `"light"`).                |
-| `Layout`      | `string`            | UI layout (default `"classic"`).             |
-| `Extra`       | `map[string]string` | App-specific preferences (serializes to JSON). |
-| `UpdatedAt`   | `time.Time`         | Last update timestamp.                       |
-| `ID`          | `int`               | Database row ID.                             |
-
-### App-specific preferences (Extra)
-
-The `Extra` field stores arbitrary key-value pairs for app-specific preferences
-that don't warrant dedicated struct fields. Use the helper methods for safe
-access:
-
-```go
-settings := porter.GetSessionSettings(r)
-
-// Read a preference (returns "" if not set).
-pageSize := settings.GetExtra("default_page_size")
-
-// Write a preference (initializes the map if nil).
-settings.SetExtra("sidebar_collapsed", "true")
-settings.SetExtra("default_page_size", "25")
-```
-
-When persisting to a database, serialize Extra to a JSON text column:
-
-```go
-// Store
-jsonStr, err := settings.MarshalExtra()
-
-// Load
-err := settings.UnmarshalExtra(jsonStr)
-```
-
-### SessionSettingsProvider interface
-
-> A media type is a COVENANT. A sacred compact. A pinky promise between systems.
->
-> -- The Wisdom of the Uniform Interface
-
-The UUID cookie is that pinky promise -- a compact between the browser and your session store. Implement this interface to back session settings with your storage layer
-(SQL, Redis, in-memory, etc.):
-
-```go
-type SessionSettingsProvider interface {
-    GetByUUID(ctx context.Context, uuid string) (*SessionSettings, error)
-    Upsert(ctx context.Context, s *SessionSettings) error
-    Touch(ctx context.Context, uuid string) error
+type Identity interface {
+    Subject() string   // unique identifier (user ID, email, etc.)
+    Roles() []string   // assigned roles
 }
 ```
 
-### Constants
+`SimpleIdentity` is a basic implementation:
 
 ```go
-const (
-    DefaultTheme  = "light"
-    DefaultLayout = "classic"
-    LayoutApp     = "app"
-)
+id := porter.SimpleIdentity{ID: "user-42", RoleList: []string{"admin", "editor"}}
 ```
 
-`NewDefaultSettings(uuid)` returns a `*SessionSettings` populated with these
-defaults.
+## CSRF Protection
 
-## Context accessors
+> The server does not remember you. The server does not pine for you between requests. The server has already forgotten you. The server has moved on.
+>
+> -- The Wisdom of the Uniform Interface
 
-Porter stores values on the request context and provides type-safe accessor
-functions:
+But the server does verify that the request was intentional. CSRF protection
+ensures that state-changing requests come from your UI, not from a malicious
+third party.
 
-| Function              | Returns              | Description                              |
-|-----------------------|----------------------|------------------------------------------|
-| `GetSessionSettings(r)` | `*SessionSettings` | Session settings from the middleware.    |
-| `GetIdentity(r)`      | `Identity`           | Identity set by auth middleware.         |
+Porter implements double-submit cookie CSRF protection with HMAC-SHA256. No
+external dependencies — stdlib crypto only.
+
+```go
+csrf := porter.CSRFProtect(porter.CSRFConfig{
+    Key: []byte("32-byte-secret-key-here........."),
+})
+handler := csrf(mux)
+
+// In a handler or template, get the token:
+token := porter.GetToken(r)
+```
+
+### How it works
+
+1. Every request gets a cookie containing a random nonce
+2. The CSRF token is `HMAC-SHA256(key, nonce)`, stored on the request context
+3. Safe methods (GET, HEAD, OPTIONS) set the cookie and context but skip validation
+4. Unsafe methods (POST, PUT, PATCH, DELETE) validate: the submitted token must
+   match the expected HMAC — checked from the request header first, then the form field
+
+### Configuration
+
+```go
+porter.CSRFProtect(porter.CSRFConfig{
+    Key:              secret,             // required, 32 bytes
+    FieldName:        "csrf_token",       // form field name (default)
+    RequestHeader:    "X-CSRF-Token",     // header name (default)
+    CookieName:       "_csrf",            // cookie name (default)
+    CookiePath:       "/",                // cookie path (default)
+    MaxAge:           43200,              // 12 hours (default)
+    Secure:           true,               // HTTPS only (default)
+    SameSite:         http.SameSiteLaxMode, // (default)
+    ExemptPaths:      []string{"/health", "/webhook"},
+    ExemptFunc:       func(r *http.Request) bool { return r.Header.Get("X-API-Key") != "" },
+    ErrorHandler:     func(w http.ResponseWriter, r *http.Request) { ... },
+    RotatePerRequest: false,              // stable token per cookie (default)
+    PerRequestPaths:  []string{"/login"}, // rotate only for these paths
+})
+```
+
+### HTMX integration
+
+Render the token in a `<meta>` tag and attach it via an HTMX listener:
+
+```html
+<meta name="csrf-token" content="{{ token }}">
+<script>
+document.body.addEventListener('htmx:configRequest', (e) => {
+    e.detail.headers['X-CSRF-Token'] =
+        document.querySelector('meta[name="csrf-token"]').content;
+});
+</script>
+```
+
+## Security Headers
+
+> grug not understand why other developer make thing so hard.
+>
+> -- Layman Grug
+
+One middleware, sensible defaults, every security header you need:
+
+```go
+handler := porter.SecurityHeaders()(mux) // defaults for everything
+```
+
+Or customize:
+
+```go
+handler := porter.SecurityHeaders(porter.SecurityHeadersConfig{
+    HSTS: &porter.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
+    ContentSecurityPolicy: "default-src 'self'",
+    PermissionsPolicy:     "camera=(), microphone=()",
+})(mux)
+```
+
+### Default headers
+
+| Header | Default Value |
+|--------|--------------|
+| `X-Frame-Options` | `SAMEORIGIN` |
+| `X-Content-Type-Options` | `nosniff` |
+| `X-XSS-Protection` | `1; mode=block` |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` |
+| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
+| `Cross-Origin-Opener-Policy` | `same-origin` |
+| `Strict-Transport-Security` | omitted (opt-in via `HSTS` config) |
+| `Content-Security-Policy` | omitted (app-specific) |
+
+Set any field to `""` to omit that header.
 
 ## With crooner
 
 [Crooner](https://github.com/catgoose/crooner) handles authentication (OIDC,
-OAuth2, session management). Porter layers on top for session settings and
-authorization. The two libraries share the same interface conventions, so
-wiring them together requires no adapters or glue code.
-
-### Session settings with crooner's session ID
-
-Porter's `SessionSettingsMiddleware` accepts an optional `SessionIDFunc` that
-returns the session identifier for the current request. When crooner manages
-sessions, read the SCS token from the request so that session settings are
-tied to the authenticated session rather than a separate cookie:
+OAuth2, session management). Porter layers on top for authorization and
+security. The two libraries share the same interface conventions — wiring
+them together requires no adapters.
 
 ```go
-session := porter.SessionSettingsMiddleware(repo, func(r *http.Request) string {
-    cookie, err := r.Cookie(sm.GetCookieName())
-    if err != nil || cookie.Value == "" {
-        return "" // falls back to porter's random cookie ID
-    }
-    return cookie.Value
-})
-handler := session(mux)
-```
+// crooner: "who are you?"
+authCfg, _ := crooner.NewAuthConfig(ctx, params)
 
-When the function returns an empty string (no session cookie yet), porter
-automatically falls back to a random cookie-based session ID, so
-unauthenticated visitors still get session settings.
-
-## Without crooner
-
-For apps that do not need external authentication, porter works standalone:
-
-```go
-mux := http.NewServeMux()
-
-// Session settings with auto-generated cookie IDs.
-session := porter.SessionSettingsMiddleware(repo, nil)
-
-// Auth middleware (if needed).
+// porter: "are you allowed?"
 auth := porter.RequireAuth(provider)
+admin := porter.RequireRole(provider, "admin")
 
-handler := auth(session(mux))
+// porter: request and response security
+csrf := porter.CSRFProtect(porter.CSRFConfig{Key: secret})
+headers := porter.SecurityHeaders()
+
+handler := headers(csrf(authCfg.Middleware()(mux)))
 ```
 
 ## Philosophy
 
-Porter follows the [dothog design philosophy](https://github.com/catgoose/dothog/blob/main/PHILOSOPHY.md): standard `func(http.Handler) http.Handler` middleware, interface-driven storage, and the server handles who you are so the handler can focus on what you want.
+Porter follows the [dothog design philosophy](https://github.com/catgoose/dothog/blob/main/PHILOSOPHY.md): standard middleware signatures, zero external dependencies, and the server handles security so handlers can focus on business logic.
 
-> Each request from client to server must contain ALL of the information necessary to understand the request. The server does not remember you. The server does not pine for you between requests.
+> The whole point -- the ENTIRE POINT -- of hypermedia is that the server tells the client what to do next IN THE RESPONSE ITSELF.
 >
 > -- The Wisdom of the Uniform Interface
 
-Porter is the warm, comfortable, widely-practiced violation. But at least it's an *explicit* violation — every session setting is typed, stored, and accessible through a clean interface.
+Porter tells the client three things: whether you're allowed in (authz), whether your request is legitimate (CSRF), and how the browser should behave (security headers). All in the middleware, before your handler runs.
 
 ## Architecture
 
 ```
-+--------------------------------------+
-|             HTTP Request             |
-+--------------+-----------------------+
-               |
-       +-------v-------+
-       |   crooner      |  "Who are you?"
-       |   (optional)   |  OIDC / OAuth2 / session login
-       +-------+-------+
-               | identity on context
-       +-------v-------+
-       |   porter       |  "What can you do?"
-       |                |  session settings / authorization
-       +-------+-------+
-               |
-       +-------v-------+
-       |   handler      |  Application logic
-       +---------------+
+  HTTP Request
+       │
+       ▼
+  ┌─────────────┐
+  │  Security   │  X-Frame-Options, HSTS, CSP, ...
+  │  Headers    │
+  └──────┬──────┘
+         │
+  ┌──────▼──────┐
+  │    CSRF     │  validate token on unsafe methods
+  │  Protect    │  set cookie + context token
+  └──────┬──────┘
+         │
+  ┌──────▼──────┐
+  │  RequireAuth│  401 if no identity
+  │  RequireRole│  403 if wrong role
+  └──────┬──────┘
+         │
+  ┌──────▼──────┐
+  │   handler   │  application logic
+  └─────────────┘
 ```
 
 ## License
