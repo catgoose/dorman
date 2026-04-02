@@ -176,7 +176,7 @@ porter.CSRFProtect(porter.CSRFConfig{
     CookieName:       "_csrf",            // cookie name (default)
     CookiePath:       "/",                // cookie path (default)
     MaxAge:           43200,              // 12 hours (default)
-    Secure:           true,               // HTTPS only (default)
+    InsecureCookie:   false,              // Secure=true by default; set true for non-HTTPS
     SameSite:         http.SameSiteLaxMode, // (default)
     ExemptPaths:      []string{"/health", "/webhook"},
     ExemptFunc:       func(r *http.Request) bool { return r.Header.Get("X-API-Key") != "" },
@@ -228,11 +228,11 @@ handler := porter.SecurityHeaders(porter.SecurityHeadersConfig{
 |--------|--------------|
 | `X-Frame-Options` | `SAMEORIGIN` |
 | `X-Content-Type-Options` | `nosniff` |
-| `X-XSS-Protection` | `1; mode=block` |
+| `X-XSS-Protection` | `0` (disabled — OWASP recommendation) |
 | `Referrer-Policy` | `strict-origin-when-cross-origin` |
 | `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
 | `Cross-Origin-Opener-Policy` | `same-origin` |
-| `Strict-Transport-Security` | omitted (opt-in via `HSTS` config) |
+| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains` (2 years) |
 | `Content-Security-Policy` | omitted (app-specific) |
 
 Set any field to `""` to omit that header.

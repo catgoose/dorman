@@ -42,8 +42,9 @@ type CSRFConfig struct {
 	CookiePath string
 	// MaxAge is the cookie max-age in seconds. Default: 43200 (12h).
 	MaxAge int
-	// Secure marks the cookie as Secure. Default: true.
-	Secure bool
+	// InsecureCookie disables the Secure flag on the CSRF cookie. Default: false
+	// (Secure=true). Set to true only for non-HTTPS environments (e.g. local dev).
+	InsecureCookie bool
 	// SameSite is the SameSite attribute for the cookie. Default: http.SameSiteLaxMode.
 	SameSite http.SameSite
 	// ExemptPaths lists exact request paths that bypass CSRF validation.
@@ -95,16 +96,6 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 	if cfg.SameSite == 0 {
 		cfg.SameSite = http.SameSiteLaxMode
 	}
-	// Secure defaults to true; callers must explicitly set false to opt out.
-	// We detect unset by checking whether the caller left the zero value — but
-	// bool zero is false, so we always apply the caller's value. The design
-	// note says "default: true", so we flip: treat the zero-value struct as
-	// "not explicitly set to false". To achieve this cleanly we rely on the
-	// struct field being set to true at the call site or we document that
-	// callers should set Secure: true. Because the user controls the struct
-	// we cannot distinguish false-as-default from false-as-intent with a plain
-	// bool. We therefore honour the value as-is; tests that want Secure=true
-	// must set it explicitly — consistent with how Go stdlib http.Cookie works.
 
 	// Build lookup sets for exempt paths and per-request paths.
 	exemptSet := make(map[string]bool, len(cfg.ExemptPaths))
@@ -333,13 +324,13 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 				}
 			}
 
-			// Set the cookie.
+			// Set the cookie. Secure is true by default; opt out with InsecureCookie.
 			http.SetCookie(w, &http.Cookie{
 				Name:     cfg.CookieName,
 				Value:    nonce,
 				Path:     cfg.CookiePath,
 				MaxAge:   cfg.MaxAge,
-				Secure:   cfg.Secure,
+				Secure:   !cfg.InsecureCookie,
 				HttpOnly: true,
 				SameSite: cfg.SameSite,
 			})

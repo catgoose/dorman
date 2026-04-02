@@ -15,7 +15,8 @@ type SecurityHeadersConfig struct {
 	// XContentTypeOptions sets X-Content-Type-Options. Default: "nosniff". Empty string omits.
 	XContentTypeOptions string
 
-	// XXSSProtection sets X-XSS-Protection. Default: "1; mode=block". Empty string omits.
+	// XXSSProtection sets X-XSS-Protection. Default: "0" (disabled). Empty string omits.
+	// OWASP recommends disabling legacy XSS auditors to avoid introducing new vulnerabilities.
 	XXSSProtection string
 
 	// ReferrerPolicy sets Referrer-Policy. Default: "strict-origin-when-cross-origin". Empty string omits.
@@ -49,7 +50,7 @@ func DefaultSecurityHeadersConfig() SecurityHeadersConfig {
 	return SecurityHeadersConfig{
 		XFrameOptions:           "SAMEORIGIN",
 		XContentTypeOptions:     "nosniff",
-		XXSSProtection:          "1; mode=block",
+		XXSSProtection:          "0",
 		ReferrerPolicy:          "strict-origin-when-cross-origin",
 		HSTS:                    &HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
 		PermissionsPolicy:       "camera=(), microphone=(), geolocation=(), payment=(), usb=()",

@@ -25,7 +25,7 @@ func TestSecurityHeaders_NoArgs_UsesDefaults(t *testing.T) {
 
 	require.Equal(t, "SAMEORIGIN", h.Get("X-Frame-Options"))
 	require.Equal(t, "nosniff", h.Get("X-Content-Type-Options"))
-	require.Equal(t, "1; mode=block", h.Get("X-XSS-Protection"))
+	require.Equal(t, "0", h.Get("X-XSS-Protection"))
 	require.Equal(t, "strict-origin-when-cross-origin", h.Get("Referrer-Policy"))
 	require.Equal(t, "max-age=63072000; includeSubDomains", h.Get("Strict-Transport-Security"))
 	require.Equal(t, "camera=(), microphone=(), geolocation=(), payment=(), usb=()", h.Get("Permissions-Policy"))
@@ -38,7 +38,7 @@ func TestSecurityHeaders_DefaultConfig_SetsAllExpectedHeaders(t *testing.T) {
 
 	require.Equal(t, "SAMEORIGIN", h.Get("X-Frame-Options"))
 	require.Equal(t, "nosniff", h.Get("X-Content-Type-Options"))
-	require.Equal(t, "1; mode=block", h.Get("X-XSS-Protection"))
+	require.Equal(t, "0", h.Get("X-XSS-Protection"))
 	require.Equal(t, "strict-origin-when-cross-origin", h.Get("Referrer-Policy"))
 	require.Equal(t, "max-age=63072000; includeSubDomains", h.Get("Strict-Transport-Security"))
 	require.Equal(t, "camera=(), microphone=(), geolocation=(), payment=(), usb=()", h.Get("Permissions-Policy"))
@@ -58,7 +58,7 @@ func TestSecurityHeaders_CustomConfig_OverridesIndividualHeaders(t *testing.T) {
 	require.Equal(t, "same-origin-allow-popups", h.Get("Cross-Origin-Opener-Policy"))
 	// Unchanged defaults still present.
 	require.Equal(t, "nosniff", h.Get("X-Content-Type-Options"))
-	require.Equal(t, "1; mode=block", h.Get("X-XSS-Protection"))
+	require.Equal(t, "0", h.Get("X-XSS-Protection"))
 }
 
 func TestSecurityHeaders_EmptyString_OmitsHeader(t *testing.T) {

@@ -279,7 +279,6 @@ func TestCookieAttributes(t *testing.T) {
 		CookieName: "_mycsrf",
 		CookiePath: "/app",
 		MaxAge:     3600,
-		Secure:     true,
 		SameSite:   http.SameSiteStrictMode,
 	}
 	handler := CSRFProtect(cfg)(inner)
