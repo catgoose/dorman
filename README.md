@@ -1,5 +1,28 @@
 # porter
 
+<!--toc:start-->
+
+- [porter](#porter)
+  - [Why](#why)
+  - [Install](#install)
+  - [Authorization](#authorization)
+    - [IdentityProvider interface](#identityprovider-interface)
+    - [RequireAuth](#requireauth)
+    - [RequireRole / RequireAnyRole](#requirerole-requireanyrole)
+    - [ContextIdentityProvider](#contextidentityprovider)
+    - [Identity interface](#identity-interface)
+  - [CSRF Protection](#csrf-protection)
+    - [How it works](#how-it-works)
+    - [Configuration](#configuration)
+    - [HTMX integration](#htmx-integration)
+  - [Security Headers](#security-headers)
+    - [Default headers](#default-headers)
+  - [With crooner](#with-crooner)
+  - [Philosophy](#philosophy)
+  - [Architecture](#architecture)
+  - [License](#license)
+  <!--toc:end-->
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/catgoose/porter.svg)](https://pkg.go.dev/github.com/catgoose/porter)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -23,20 +46,23 @@ Zero external dependencies. Works with any router or framework.
 ```go
 // Role checks scattered across handlers
 func adminHandler(w http.ResponseWriter, r *http.Request) {
-    id := getIdentityFromContext(r) // hope this exists
-    if id == nil {
-        http.Error(w, "", 401)
-        return
-    }
-    hasRole := false
-    for _, role := range id.Roles {
-        if role == "admin" { hasRole = true; break }
-    }
-    if !hasRole {
-        http.Error(w, "", 403)
-        return
-    }
-    // actual handler logic, finally
+	id := getIdentityFromContext(r) // hope this exists
+	if id == nil {
+		http.Error(w, "", 401)
+		return
+	}
+	hasRole := false
+	for _, role := range id.Roles {
+		if role == "admin" {
+			hasRole = true
+			break
+		}
+	}
+	if !hasRole {
+		http.Error(w, "", 403)
+		return
+	}
+	// actual handler logic, finally
 }
 
 // CSRF: pull in gorilla/csrf, configure separately
@@ -73,7 +99,7 @@ go get github.com/catgoose/porter
 
 ```go
 type IdentityProvider interface {
-    GetIdentity(r *http.Request) (Identity, error)
+	GetIdentity(r *http.Request) (Identity, error)
 }
 ```
 
@@ -91,8 +117,8 @@ handler := porter.RequireAuth(provider)(mux)
 
 // In a handler:
 mux.HandleFunc("GET /me", func(w http.ResponseWriter, r *http.Request) {
-    id := porter.GetIdentity(r)
-    fmt.Fprintf(w, "Hello, %s", id.Subject())
+	id := porter.GetIdentity(r)
+	fmt.Fprintf(w, "Hello, %s", id.Subject())
 })
 ```
 
@@ -124,8 +150,8 @@ provider := porter.ContextIdentityProvider{ContextKey: myAuthKey{}}
 
 ```go
 type Identity interface {
-    Subject() string   // unique identifier (user ID, email, etc.)
-    Roles() []string   // assigned roles
+	Subject() string // unique identifier (user ID, email, etc.)
+	Roles() []string // assigned roles
 }
 ```
 
@@ -150,7 +176,7 @@ external dependencies — stdlib crypto only.
 
 ```go
 csrf := porter.CSRFProtect(porter.CSRFConfig{
-    Key: []byte("32-byte-secret-key-here........."),
+	Key: []byte("32-byte-secret-key-here........."),
 })
 handler := csrf(mux)
 
@@ -191,12 +217,13 @@ porter.CSRFProtect(porter.CSRFConfig{
 Render the token in a `<meta>` tag and attach it via an HTMX listener:
 
 ```html
-<meta name="csrf-token" content="{{ token }}">
+<meta name="csrf-token" content="{{ token }}" />
 <script>
-document.body.addEventListener('htmx:configRequest', (e) => {
-    e.detail.headers['X-CSRF-Token'] =
-        document.querySelector('meta[name="csrf-token"]').content;
-});
+  document.body.addEventListener("htmx:configRequest", (e) => {
+    e.detail.headers["X-CSRF-Token"] = document.querySelector(
+      'meta[name="csrf-token"]',
+    ).content;
+  });
 </script>
 ```
 
@@ -216,24 +243,24 @@ Or customize:
 
 ```go
 handler := porter.SecurityHeaders(porter.SecurityHeadersConfig{
-    HSTS: &porter.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
-    ContentSecurityPolicy: "default-src 'self'",
-    PermissionsPolicy:     "camera=(), microphone=()",
+	HSTS:                  &porter.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
+	ContentSecurityPolicy: "default-src 'self'",
+	PermissionsPolicy:     "camera=(), microphone=()",
 })(mux)
 ```
 
 ### Default headers
 
-| Header | Default Value |
-|--------|--------------|
-| `X-Frame-Options` | `SAMEORIGIN` |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-XSS-Protection` | `0` (disabled — OWASP recommendation) |
-| `Referrer-Policy` | `strict-origin-when-cross-origin` |
-| `Permissions-Policy` | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
-| `Cross-Origin-Opener-Policy` | `same-origin` |
-| `Strict-Transport-Security` | `max-age=63072000; includeSubDomains` (2 years) |
-| `Content-Security-Policy` | omitted (app-specific) |
+| Header                       | Default Value                                                  |
+| ---------------------------- | -------------------------------------------------------------- |
+| `X-Frame-Options`            | `SAMEORIGIN`                                                   |
+| `X-Content-Type-Options`     | `nosniff`                                                      |
+| `X-XSS-Protection`           | `0` (disabled — OWASP recommendation)                          |
+| `Referrer-Policy`            | `strict-origin-when-cross-origin`                              |
+| `Permissions-Policy`         | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
+| `Cross-Origin-Opener-Policy` | `same-origin`                                                  |
+| `Strict-Transport-Security`  | `max-age=63072000; includeSubDomains` (2 years)                |
+| `Content-Security-Policy`    | omitted (app-specific)                                         |
 
 Set any field to `""` to omit that header.
 
