@@ -8,7 +8,8 @@
   - [Authorization](#authorization)
     - [IdentityProvider interface](#identityprovider-interface)
     - [RequireAuth](#requireauth)
-    - [RequireRole / RequireAnyRole](#requirerole-requireanyrole)
+    - [RequireRole / RequireAnyRole / RequireAllRoles](#requirerole--requireanyrole--requireallroles)
+    - [Custom error handling](#custom-error-handling)
     - [ContextIdentityProvider](#contextidentityprovider)
     - [Identity interface](#identity-interface)
   - [CSRF Protection](#csrf-protection)
@@ -17,6 +18,8 @@
     - [HTMX integration](#htmx-integration)
   - [Security Headers](#security-headers)
     - [Default headers](#default-headers)
+  - [Request Body Limits](#request-body-limits)
+  - [Middleware Chain](#middleware-chain)
   - [With crooner](#with-crooner)
   - [Philosophy](#philosophy)
   - [Architecture](#architecture)
@@ -33,7 +36,7 @@
 > -- The Wisdom of the Uniform Interface
 
 Authorization, CSRF protection, and security header middleware for Go
-`net/http` applications. Porter guards the door — identity checks, role
+`net/http` applications. Porter guards the door -- identity checks, role
 enforcement, request verification, and response hardening in standard
 `func(http.Handler) http.Handler` middleware.
 
@@ -83,8 +86,11 @@ mux.Handle("GET /admin", admin(adminPage))
 csrf := porter.CSRFProtect(porter.CSRFConfig{Key: secret})
 // Security headers with sensible defaults
 headers := porter.SecurityHeaders()
+// Request body limits
+limit := porter.MaxRequestBody(porter.MaxBodyConfig{Default: 1 << 20})
 
-handler := headers(csrf(porter.RequireAuth(provider)(mux)))
+// Compose left-to-right
+handler := porter.Chain(headers, limit, csrf, porter.RequireAuth(provider))(mux)
 ```
 
 ## Install
@@ -103,7 +109,7 @@ type IdentityProvider interface {
 }
 ```
 
-Implement this interface to provide identity from any source — OIDC tokens,
+Implement this interface to provide identity from any source -- OIDC tokens,
 JWTs, database sessions, request headers. Porter doesn't care where identity
 comes from, only that it satisfies the interface.
 
@@ -122,18 +128,46 @@ mux.HandleFunc("GET /me", func(w http.ResponseWriter, r *http.Request) {
 })
 ```
 
-### RequireRole / RequireAnyRole
+### RequireRole / RequireAnyRole / RequireAllRoles
 
 Role-based access control. Returns 401 for unauthenticated requests and 403
 when the identity lacks the required role(s):
 
 ```go
+// Exact role match
 adminOnly := porter.RequireRole(provider, "admin")
 handler := adminOnly(mux)
 
+// Any of these roles (OR)
 editorOrAdmin := porter.RequireAnyRole(provider, []string{"admin", "editor"})
 handler := editorOrAdmin(mux)
+
+// All of these roles (AND)
+superuser := porter.RequireAllRoles(provider, "admin", "billing")
+handler := superuser(mux)
 ```
+
+### Custom error handling
+
+By default, auth middleware returns bare status codes with empty bodies.
+Use `AuthErrorHandler` to customize the response -- redirect to a login page,
+return HTML, or write structured errors:
+
+```go
+auth := porter.RequireAuth(provider, porter.AuthErrorHandler(
+	func(w http.ResponseWriter, r *http.Request, err error) {
+		if errors.Is(err, porter.ErrUnauthorized) {
+			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		http.Error(w, "Forbidden", http.StatusForbidden)
+	},
+))
+```
+
+The `err` argument is one of the sentinel errors (`ErrUnauthorized` or
+`ErrForbidden`) so you can distinguish 401 vs 403 cases. Works with
+`RequireAuth`, `RequireRole`, and `RequireAnyRole`.
 
 ### ContextIdentityProvider
 
@@ -172,7 +206,7 @@ ensures that state-changing requests come from your UI, not from a malicious
 third party.
 
 Porter implements double-submit cookie CSRF protection with HMAC-SHA256. No
-external dependencies — stdlib crypto only.
+external dependencies -- stdlib crypto only.
 
 ```go
 csrf := porter.CSRFProtect(porter.CSRFConfig{
@@ -190,7 +224,7 @@ token := porter.GetToken(r)
 2. The CSRF token is `HMAC-SHA256(key, nonce)`, stored on the request context
 3. Safe methods (GET, HEAD, OPTIONS) set the cookie and context but skip validation
 4. Unsafe methods (POST, PUT, PATCH, DELETE) validate: the submitted token must
-   match the expected HMAC — checked from the request header first, then the form field
+   match the expected HMAC -- checked from the request header first, then the form field
 
 ### Configuration
 
@@ -243,7 +277,9 @@ Or customize:
 
 ```go
 handler := porter.SecurityHeaders(porter.SecurityHeadersConfig{
+	// HSTS is disabled by default -- opt in when serving over TLS:
 	HSTS:                  &porter.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
+	// or use the helper: HSTS: porter.DefaultHSTSConfig(),
 	ContentSecurityPolicy: "default-src 'self'",
 	PermissionsPolicy:     "camera=(), microphone=()",
 })(mux)
@@ -255,20 +291,77 @@ handler := porter.SecurityHeaders(porter.SecurityHeadersConfig{
 | ---------------------------- | -------------------------------------------------------------- |
 | `X-Frame-Options`            | `SAMEORIGIN`                                                   |
 | `X-Content-Type-Options`     | `nosniff`                                                      |
-| `X-XSS-Protection`           | `0` (disabled — OWASP recommendation)                          |
+| `X-XSS-Protection`           | `0` (disabled -- OWASP recommendation)                         |
 | `Referrer-Policy`            | `strict-origin-when-cross-origin`                              |
 | `Permissions-Policy`         | `camera=(), microphone=(), geolocation=(), payment=(), usb=()` |
 | `Cross-Origin-Opener-Policy` | `same-origin`                                                  |
-| `Strict-Transport-Security`  | `max-age=63072000; includeSubDomains` (2 years)                |
+| `Strict-Transport-Security`  | omitted (opt-in -- can break dev without TLS)                  |
 | `Content-Security-Policy`    | omitted (app-specific)                                         |
 
 Set any field to `""` to omit that header.
+
+Enable HSTS when serving over TLS:
+
+```go
+// Enable HSTS with sensible defaults (2 years, includeSubDomains):
+cfg := porter.DefaultSecurityHeadersConfig()
+cfg.HSTS = porter.DefaultHSTSConfig()
+handler := porter.SecurityHeaders(cfg)(mux)
+```
+
+## Request Body Limits
+
+> complexity is apex predator.
+>
+> -- Layman Grug
+
+Wraps `http.MaxBytesReader` with configurable per-path limits and custom
+error handling. Prevents oversized payloads from reaching your handlers:
+
+```go
+limit := porter.MaxRequestBody(porter.MaxBodyConfig{
+    Default: 1 << 20, // 1 MB default
+    PerPath: map[string]int64{
+        "/upload": 10 << 20, // 10 MB for uploads
+    },
+})
+handler := limit(mux)
+```
+
+When a request exceeds the limit, the default response is `413 Request Entity
+Too Large`. Provide an `ErrorHandler` to customize:
+
+```go
+limit := porter.MaxRequestBody(porter.MaxBodyConfig{
+    Default: 1 << 20,
+    ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
+        http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+    },
+})
+```
+
+## Middleware Chain
+
+Composing middleware with nested calls works for two or three layers but
+becomes hard to read at scale. `Chain` composes left-to-right -- the first
+argument is the outermost middleware:
+
+```go
+// Instead of this:
+handler := headers(limit(csrf(auth(mux))))
+
+// Write this:
+handler := porter.Chain(headers, limit, csrf, auth)(mux)
+```
+
+`Chain` returns a `func(http.Handler) http.Handler`, so it composes with
+everything else in the standard middleware idiom.
 
 ## With crooner
 
 [Crooner](https://github.com/catgoose/crooner) handles authentication (OIDC,
 OAuth2, session management). Porter layers on top for authorization and
-security. The two libraries share the same interface conventions — wiring
+security. The two libraries share the same interface conventions -- wiring
 them together requires no adapters.
 
 ```go
@@ -276,14 +369,14 @@ them together requires no adapters.
 authCfg, _ := crooner.NewAuthConfig(ctx, params)
 
 // porter: "are you allowed?"
-auth := porter.RequireAuth(provider)
 admin := porter.RequireRole(provider, "admin")
 
 // porter: request and response security
 csrf := porter.CSRFProtect(porter.CSRFConfig{Key: secret})
 headers := porter.SecurityHeaders()
+limit := porter.MaxRequestBody(porter.MaxBodyConfig{Default: 1 << 20})
 
-handler := headers(csrf(authCfg.Middleware()(mux)))
+handler := porter.Chain(headers, limit, csrf, authCfg.Middleware())(mux)
 ```
 
 ## Philosophy
@@ -300,26 +393,30 @@ Porter tells the client three things: whether you're allowed in (authz), whether
 
 ```
   HTTP Request
-       │
-       ▼
-  ┌─────────────┐
-  │  Security   │  X-Frame-Options, HSTS, CSP, ...
-  │  Headers    │
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐
-  │    CSRF     │  validate token on unsafe methods
-  │  Protect    │  set cookie + context token
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐
-  │  RequireAuth│  401 if no identity
-  │  RequireRole│  403 if wrong role
-  └──────┬──────┘
-         │
-  ┌──────▼──────┐
-  │   handler   │  application logic
-  └─────────────┘
+       |
+       v
+  +-----------------+
+  | Security Headers|  X-Frame-Options, HSTS, CSP, ...
+  +---------+-------+
+            |
+  +---------v-------+
+  | MaxRequestBody  |  reject oversized payloads
+  +---------+-------+
+            |
+  +---------v-------+
+  |  CSRF Protect   |  validate token on unsafe methods
+  |                 |  set cookie + context token
+  +---------+-------+
+            |
+  +---------v-------+
+  |  RequireAuth    |  401 if no identity
+  |  RequireRole    |  403 if wrong role
+  |  RequireAllRoles|  403 if missing any role
+  +---------+-------+
+            |
+  +---------v-------+
+  |     handler     |  application logic
+  +-----------------+
 ```
 
 ## License
