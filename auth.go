@@ -68,15 +68,55 @@ func GetIdentity(r *http.Request) Identity {
 	return id
 }
 
+// AuthErrorFunc is a callback invoked when auth middleware rejects a request.
+// The err argument is one of the sentinel errors ([ErrUnauthorized] or
+// [ErrForbidden]) so callers can distinguish 401 vs 403 cases.
+type AuthErrorFunc func(w http.ResponseWriter, r *http.Request, err error)
+
+// AuthOption configures optional behavior for auth middleware.
+type AuthOption func(*authConfig)
+
+type authConfig struct {
+	errorHandler AuthErrorFunc
+}
+
+func buildAuthConfig(opts []AuthOption) authConfig {
+	var cfg authConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	return cfg
+}
+
+// AuthErrorHandler returns an [AuthOption] that sets a custom error handler
+// for auth middleware. When set, the handler is called instead of the default
+// bare status-code response.
+func AuthErrorHandler(fn AuthErrorFunc) AuthOption {
+	return func(cfg *authConfig) {
+		cfg.errorHandler = fn
+	}
+}
+
+// authFail writes the appropriate error response. If a custom handler is
+// configured it delegates to that; otherwise it writes a bare status code.
+func authFail(w http.ResponseWriter, r *http.Request, err error, statusCode int, cfg authConfig) {
+	if cfg.errorHandler != nil {
+		cfg.errorHandler(w, r, err)
+		return
+	}
+	http.Error(w, "", statusCode)
+}
+
 // RequireAuth returns middleware that rejects unauthenticated requests with
 // 401 Unauthorized. Authenticated identities are stored on the request context
 // for downstream handlers via [GetIdentity].
-func RequireAuth(provider IdentityProvider) func(http.Handler) http.Handler {
+func RequireAuth(provider IdentityProvider, opts ...AuthOption) func(http.Handler) http.Handler {
+	cfg := buildAuthConfig(opts)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id, err := provider.GetIdentity(r)
 			if err != nil || id == nil {
-				http.Error(w, "", http.StatusUnauthorized)
+				authFail(w, r, ErrUnauthorized, http.StatusUnauthorized, cfg)
 				return
 			}
 			r = r.WithContext(context.WithValue(r.Context(), identityCtxKey, id))
@@ -88,8 +128,8 @@ func RequireAuth(provider IdentityProvider) func(http.Handler) http.Handler {
 // RequireRole returns middleware that requires the identity to have the given
 // role. Unauthenticated requests receive 401; authenticated requests missing the
 // role receive 403.
-func RequireRole(provider IdentityProvider, role string) func(http.Handler) http.Handler {
-	return RequireAnyRole(provider, role)
+func RequireRole(provider IdentityProvider, role string, opts ...AuthOption) func(http.Handler) http.Handler {
+	return RequireAnyRole(provider, []string{role}, opts...)
 }
 
 // RequireAllRoles returns middleware that requires the identity to have all of
@@ -126,7 +166,8 @@ func RequireAllRoles(provider IdentityProvider, roles ...string) func(http.Handl
 // RequireAnyRole returns middleware that requires the identity to have at least
 // one of the given roles. Unauthenticated requests receive 401; authenticated
 // requests missing all roles receive 403.
-func RequireAnyRole(provider IdentityProvider, roles ...string) func(http.Handler) http.Handler {
+func RequireAnyRole(provider IdentityProvider, roles []string, opts ...AuthOption) func(http.Handler) http.Handler {
+	cfg := buildAuthConfig(opts)
 	want := make(map[string]struct{}, len(roles))
 	for _, r := range roles {
 		want[r] = struct{}{}
@@ -135,7 +176,7 @@ func RequireAnyRole(provider IdentityProvider, roles ...string) func(http.Handle
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id, err := provider.GetIdentity(r)
 			if err != nil || id == nil {
-				http.Error(w, "", http.StatusUnauthorized)
+				authFail(w, r, ErrUnauthorized, http.StatusUnauthorized, cfg)
 				return
 			}
 			for _, role := range id.Roles() {
@@ -145,7 +186,7 @@ func RequireAnyRole(provider IdentityProvider, roles ...string) func(http.Handle
 					return
 				}
 			}
-			http.Error(w, "", http.StatusForbidden)
+			authFail(w, r, ErrForbidden, http.StatusForbidden, cfg)
 		})
 	}
 }

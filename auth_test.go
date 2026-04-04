@@ -93,7 +93,7 @@ func TestRequireRole_MissingRole(t *testing.T) {
 func TestRequireAnyRole_HasOneOf(t *testing.T) {
 	id := SimpleIdentity{ID: "user-1", RoleList: []string{"editor"}}
 	provider := &staticProvider{identity: id}
-	mw := RequireAnyRole(provider, "admin", "editor")
+	mw := RequireAnyRole(provider, []string{"admin", "editor"})
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -110,7 +110,7 @@ func TestRequireAnyRole_HasOneOf(t *testing.T) {
 func TestRequireAnyRole_HasNone(t *testing.T) {
 	id := SimpleIdentity{ID: "user-1", RoleList: []string{"viewer"}}
 	provider := &staticProvider{identity: id}
-	mw := RequireAnyRole(provider, "admin", "editor")
+	mw := RequireAnyRole(provider, []string{"admin", "editor"})
 
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -188,7 +188,7 @@ func TestContextIdentityProvider(t *testing.T) {
 // returns nil identity with no error, which should result in 401.
 func TestRequireAnyRole_NilIdentityNoError(t *testing.T) {
 	provider := &staticProvider{identity: nil, err: nil}
-	mw := RequireAnyRole(provider, "admin")
+	mw := RequireAnyRole(provider, []string{"admin"})
 
 	var called bool
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +202,135 @@ func TestRequireAnyRole_NilIdentityNoError(t *testing.T) {
 
 	require.False(t, called)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+func TestAuthErrorHandler_RequireAuth(t *testing.T) {
+	provider := &staticProvider{err: ErrNoIdentity}
+
+	var gotErr error
+	handler := RequireAuth(provider, AuthErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		gotErr = err
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("please log in"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	require.ErrorIs(t, gotErr, ErrUnauthorized)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "please log in", rec.Body.String())
+}
+
+func TestAuthErrorHandler_RequireRole_Forbidden(t *testing.T) {
+	id := SimpleIdentity{ID: "user-1", RoleList: []string{"viewer"}}
+	provider := &staticProvider{identity: id}
+
+	var gotErr error
+	handler := RequireRole(provider, "admin", AuthErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		gotErr = err
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("no access"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	require.ErrorIs(t, gotErr, ErrForbidden)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, "no access", rec.Body.String())
+}
+
+func TestAuthErrorHandler_RequireRole_Unauthorized(t *testing.T) {
+	provider := &staticProvider{err: ErrNoIdentity}
+
+	var gotErr error
+	handler := RequireRole(provider, "admin", AuthErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		gotErr = err
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("login required"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	require.ErrorIs(t, gotErr, ErrUnauthorized)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "login required", rec.Body.String())
+}
+
+func TestAuthErrorHandler_RequireAnyRole(t *testing.T) {
+	id := SimpleIdentity{ID: "user-1", RoleList: []string{"viewer"}}
+	provider := &staticProvider{identity: id}
+
+	var gotErr error
+	handler := RequireAnyRole(provider, []string{"admin", "editor"}, AuthErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		gotErr = err
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("insufficient role"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	require.ErrorIs(t, gotErr, ErrForbidden)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, "insufficient role", rec.Body.String())
+}
+
+func TestAuthErrorHandler_DefaultBehaviorUnchanged(t *testing.T) {
+	t.Run("RequireAuth without options", func(t *testing.T) {
+		provider := &staticProvider{err: ErrNoIdentity}
+		mw := RequireAuth(provider)
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusUnauthorized, rec.Code)
+	})
+
+	t.Run("RequireRole without options", func(t *testing.T) {
+		id := SimpleIdentity{ID: "user-1", RoleList: []string{"viewer"}}
+		provider := &staticProvider{identity: id}
+		mw := RequireRole(provider, "admin")
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+	})
+
+	t.Run("RequireAnyRole without options", func(t *testing.T) {
+		id := SimpleIdentity{ID: "user-1", RoleList: []string{"viewer"}}
+		provider := &staticProvider{identity: id}
+		mw := RequireAnyRole(provider, []string{"admin"})
+
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+		mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusForbidden, rec.Code)
+	})
 }
 
 func TestRequireAllRoles(t *testing.T) {

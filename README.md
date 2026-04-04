@@ -131,7 +131,7 @@ when the identity lacks the required role(s):
 adminOnly := porter.RequireRole(provider, "admin")
 handler := adminOnly(mux)
 
-editorOrAdmin := porter.RequireAnyRole(provider, "admin", "editor")
+editorOrAdmin := porter.RequireAnyRole(provider, []string{"admin", "editor"})
 handler := editorOrAdmin(mux)
 ```
 
