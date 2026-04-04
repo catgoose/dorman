@@ -92,6 +92,37 @@ func RequireRole(provider IdentityProvider, role string) func(http.Handler) http
 	return RequireAnyRole(provider, role)
 }
 
+// RequireAllRoles returns middleware that requires the identity to have all of
+// the given roles. Unauthenticated requests receive 401; authenticated requests
+// missing any role receive 403.
+func RequireAllRoles(provider IdentityProvider, roles ...string) func(http.Handler) http.Handler {
+	want := make(map[string]struct{}, len(roles))
+	for _, r := range roles {
+		want[r] = struct{}{}
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id, err := provider.GetIdentity(r)
+			if err != nil || id == nil {
+				http.Error(w, "", http.StatusUnauthorized)
+				return
+			}
+			have := make(map[string]struct{}, len(id.Roles()))
+			for _, role := range id.Roles() {
+				have[role] = struct{}{}
+			}
+			for needed := range want {
+				if _, ok := have[needed]; !ok {
+					http.Error(w, "", http.StatusForbidden)
+					return
+				}
+			}
+			r = r.WithContext(context.WithValue(r.Context(), identityCtxKey, id))
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // RequireAnyRole returns middleware that requires the identity to have at least
 // one of the given roles. Unauthenticated requests receive 401; authenticated
 // requests missing all roles receive 403.

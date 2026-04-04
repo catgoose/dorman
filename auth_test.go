@@ -204,6 +204,64 @@ func TestRequireAnyRole_NilIdentityNoError(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
 }
 
+func TestRequireAllRoles(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+
+	tests := []struct {
+		name     string
+		provider *staticProvider
+		roles    []string
+		wantCode int
+	}{
+		{
+			name:     "has all roles",
+			provider: &staticProvider{identity: SimpleIdentity{ID: "u1", RoleList: []string{"admin", "editor", "viewer"}}},
+			roles:    []string{"admin", "editor"},
+			wantCode: http.StatusOK,
+		},
+		{
+			name:     "missing one role",
+			provider: &staticProvider{identity: SimpleIdentity{ID: "u1", RoleList: []string{"editor"}}},
+			roles:    []string{"admin", "editor"},
+			wantCode: http.StatusForbidden,
+		},
+		{
+			name:     "no identity returns 401",
+			provider: &staticProvider{err: ErrNoIdentity},
+			roles:    []string{"admin"},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "nil identity no error returns 401",
+			provider: &staticProvider{identity: nil, err: nil},
+			roles:    []string{"admin"},
+			wantCode: http.StatusUnauthorized,
+		},
+		{
+			name:     "empty roles list allows any authenticated user",
+			provider: &staticProvider{identity: SimpleIdentity{ID: "u1", RoleList: []string{"viewer"}}},
+			roles:    []string{},
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mw := RequireAllRoles(tt.provider, tt.roles...)
+			handler := mw(ok)
+
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			require.Equal(t, tt.wantCode, rec.Code)
+		})
+	}
+}
+
 // Compile-time interface checks.
 var (
 	_ Identity         = SimpleIdentity{}
