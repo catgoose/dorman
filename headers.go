@@ -46,16 +46,23 @@ type HSTSConfig struct {
 }
 
 // DefaultSecurityHeadersConfig returns a [SecurityHeadersConfig] with sensible defaults.
+// HSTS is nil (disabled) by default because it can break development environments
+// without TLS. Enable it explicitly with [DefaultHSTSConfig] when serving over HTTPS.
 func DefaultSecurityHeadersConfig() SecurityHeadersConfig {
 	return SecurityHeadersConfig{
 		XFrameOptions:           "SAMEORIGIN",
 		XContentTypeOptions:     "nosniff",
 		XXSSProtection:          "0",
 		ReferrerPolicy:          "strict-origin-when-cross-origin",
-		HSTS:                    &HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
 		PermissionsPolicy:       "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
 		CrossOriginOpenerPolicy: "same-origin",
 	}
+}
+
+// DefaultHSTSConfig returns an [HSTSConfig] with sensible defaults:
+// max-age=63072000 (2 years), includeSubDomains=true, preload=false.
+func DefaultHSTSConfig() *HSTSConfig {
+	return &HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true}
 }
 
 // SecurityHeaders returns middleware that sets security response headers before

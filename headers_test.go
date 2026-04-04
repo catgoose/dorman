@@ -27,7 +27,7 @@ func TestSecurityHeaders_NoArgs_UsesDefaults(t *testing.T) {
 	require.Equal(t, "nosniff", h.Get("X-Content-Type-Options"))
 	require.Equal(t, "0", h.Get("X-XSS-Protection"))
 	require.Equal(t, "strict-origin-when-cross-origin", h.Get("Referrer-Policy"))
-	require.Equal(t, "max-age=63072000; includeSubDomains", h.Get("Strict-Transport-Security"))
+	require.Empty(t, h.Get("Strict-Transport-Security"), "HSTS should be disabled by default")
 	require.Equal(t, "camera=(), microphone=(), geolocation=(), payment=(), usb=()", h.Get("Permissions-Policy"))
 	require.Equal(t, "same-origin", h.Get("Cross-Origin-Opener-Policy"))
 	require.Empty(t, h.Get("Content-Security-Policy"))
@@ -40,7 +40,7 @@ func TestSecurityHeaders_DefaultConfig_SetsAllExpectedHeaders(t *testing.T) {
 	require.Equal(t, "nosniff", h.Get("X-Content-Type-Options"))
 	require.Equal(t, "0", h.Get("X-XSS-Protection"))
 	require.Equal(t, "strict-origin-when-cross-origin", h.Get("Referrer-Policy"))
-	require.Equal(t, "max-age=63072000; includeSubDomains", h.Get("Strict-Transport-Security"))
+	require.Empty(t, h.Get("Strict-Transport-Security"), "HSTS should be disabled by default")
 	require.Equal(t, "camera=(), microphone=(), geolocation=(), payment=(), usb=()", h.Get("Permissions-Policy"))
 	require.Equal(t, "same-origin", h.Get("Cross-Origin-Opener-Policy"))
 }
@@ -85,9 +85,9 @@ func TestSecurityHeaders_HSTS_Nil_OmitsHeader(t *testing.T) {
 	require.Empty(t, h.Get("Strict-Transport-Security"))
 }
 
-func TestSecurityHeaders_HSTS_Defaults(t *testing.T) {
+func TestSecurityHeaders_HSTS_OptIn_WithDefaultHSTSConfig(t *testing.T) {
 	cfg := DefaultSecurityHeadersConfig()
-	// HSTS defaults: MaxAge=63072000, IncludeSubDomains=true, Preload=false.
+	cfg.HSTS = DefaultHSTSConfig()
 
 	h := runSecurityHeaders(t, SecurityHeaders(cfg))
 
@@ -145,7 +145,7 @@ func TestSecurityHeaders_HeadersPresentOnResponse(t *testing.T) {
 	require.Equal(t, "hello", rec.Body.String())
 	require.NotEmpty(t, rec.Header().Get("X-Frame-Options"))
 	require.NotEmpty(t, rec.Header().Get("X-Content-Type-Options"))
-	require.NotEmpty(t, rec.Header().Get("Strict-Transport-Security"))
+	require.Empty(t, rec.Header().Get("Strict-Transport-Security"), "HSTS should be disabled by default")
 }
 
 func TestSecurityHeaders_ZeroValueHSTSMaxAge_UsesDefault(t *testing.T) {
