@@ -35,10 +35,12 @@
 >
 > -- The Wisdom of the Uniform Interface
 
-Authorization, CSRF protection, and security header middleware for Go
-`net/http` applications. Porter guards the door -- identity checks, role
-enforcement, request verification, and response hardening in standard
-`func(http.Handler) http.Handler` middleware.
+Post-authentication security middleware for Go `net/http` applications. Porter
+guards the door -- role enforcement, CSRF verification, request limits, and
+response hardening in standard `func(http.Handler) http.Handler` middleware.
+Porter doesn't handle authentication (see [crooner](https://github.com/catgoose/crooner)
+for that) -- it assumes an identity already exists and enforces security on top
+of it.
 
 Zero external dependencies. Works with any router or framework.
 
