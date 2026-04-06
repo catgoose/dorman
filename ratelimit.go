@@ -115,10 +115,7 @@ func buildRateLimitHandler(cfg RateLimitConfig, store *rateLimitStore, exemptSet
 
 			if count > limit {
 				remaining := dur - now.Sub(start)
-				retryAfter := int(remaining.Seconds())
-				if retryAfter < 1 {
-					retryAfter = 1
-				}
+				retryAfter := max(int(remaining.Seconds()), 1)
 				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 				if cfg.ErrorHandler != nil {
 					cfg.ErrorHandler(w, r)
@@ -269,10 +266,7 @@ func buildBruteForceHandler(cfg BruteForceConfig, store *bruteForceStore, failur
 				elapsed := store.nowFunc().Sub(entry.blockedAt)
 				if elapsed < store.cooldown {
 					remaining := store.cooldown - elapsed
-					retryAfter := int(remaining.Seconds())
-					if retryAfter < 1 {
-						retryAfter = 1
-					}
+					retryAfter := max(int(remaining.Seconds()), 1)
 					store.mu.Unlock()
 					w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 					if cfg.ErrorHandler != nil {
