@@ -1,6 +1,7 @@
 package dorman
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
@@ -221,6 +222,27 @@ func (bw *bruteForceWriter) WriteHeader(code int) {
 		}
 	})
 	bw.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap returns the underlying ResponseWriter so that [http.NewResponseController]
+// can access optional interfaces on the original writer.
+func (bw *bruteForceWriter) Unwrap() http.ResponseWriter {
+	return bw.ResponseWriter
+}
+
+// Flush delegates to the underlying ResponseWriter if it implements [http.Flusher].
+func (bw *bruteForceWriter) Flush() {
+	if f, ok := bw.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack delegates to the underlying ResponseWriter if it implements [http.Hijacker].
+func (bw *bruteForceWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := bw.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("dorman: underlying ResponseWriter does not implement http.Hijacker")
 }
 
 // BruteForceProtect returns middleware that tracks failed response status codes

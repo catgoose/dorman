@@ -10,6 +10,71 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestMaxBodyWriter_Unwrap(t *testing.T) {
+	inner := httptest.NewRecorder()
+	w := &maxBodyWriter{ResponseWriter: inner}
+	require.Equal(t, http.ResponseWriter(inner), w.Unwrap())
+}
+
+func TestMaxBodyWriter_Flush_Delegates(t *testing.T) {
+	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
+	w := &maxBodyWriter{ResponseWriter: inner}
+	w.Flush()
+	require.True(t, inner.flushed)
+}
+
+func TestMaxBodyWriter_Flush_NoopWhenNotSupported(t *testing.T) {
+	inner := newPlainResponseWriter()
+	w := &maxBodyWriter{ResponseWriter: inner}
+	// Should not panic when underlying writer does not implement Flusher.
+	w.Flush()
+}
+
+func TestMaxBodyWriter_Hijack_Delegates(t *testing.T) {
+	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
+	w := &maxBodyWriter{ResponseWriter: inner}
+	_, _, err := w.Hijack()
+	require.NoError(t, err)
+	require.True(t, inner.hijacked)
+}
+
+func TestMaxBodyWriter_Hijack_ErrorWhenNotSupported(t *testing.T) {
+	inner := newPlainResponseWriter()
+	w := &maxBodyWriter{ResponseWriter: inner}
+	_, _, err := w.Hijack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "http.Hijacker")
+}
+
+func TestMaxBodyWriter_InterfacePreservation_ThroughMiddleware(t *testing.T) {
+	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
+
+	var capturedWriter http.ResponseWriter
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedWriter = w
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := MaxRequestBody(MaxBodyConfig{
+		Default:      1024,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request) {},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello"))
+	mw(handler).ServeHTTP(inner, req)
+
+	// The captured writer should support Flusher and Hijacker via delegation.
+	_, ok := capturedWriter.(http.Flusher)
+	require.True(t, ok, "maxBodyWriter should implement http.Flusher")
+
+	_, ok = capturedWriter.(http.Hijacker)
+	require.True(t, ok, "maxBodyWriter should implement http.Hijacker")
+
+	// NewResponseController should be able to reach the underlying writer.
+	rc := http.NewResponseController(capturedWriter)
+	require.NotNil(t, rc)
+}
+
 // echoBodyHandler reads the full request body and writes it back. If the read
 // fails (e.g. MaxBytesReader limit hit), it writes a 413 response.
 func echoBodyHandler() http.Handler {
