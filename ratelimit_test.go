@@ -220,8 +220,7 @@ func TestRateLimit_RetryAfterHeader(t *testing.T) {
 		done:    make(chan struct{}),
 	}
 
-	exemptSet := make(map[string]bool)
-	handler := buildRateLimitHandler(cfg, store, exemptSet, IPKey)(okHandler())
+	handler := buildRateLimitHandler(cfg, store, nil, IPKey)(okHandler())
 
 	// First request passes.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -249,8 +248,7 @@ func TestRateLimit_WindowResets(t *testing.T) {
 		done:    make(chan struct{}),
 	}
 
-	exemptSet := make(map[string]bool)
-	handler := buildRateLimitHandler(cfg, store, exemptSet, IPKey)(okHandler())
+	handler := buildRateLimitHandler(cfg, store, nil, IPKey)(okHandler())
 
 	// First request passes.
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -332,6 +330,39 @@ func TestRateLimit_ExemptPaths_Bypass(t *testing.T) {
 		handler.ServeHTTP(rec, req)
 		require.Equal(t, http.StatusOK, rec.Code)
 	}
+}
+
+func TestRateLimit_ExemptPaths_PrefixMatch(t *testing.T) {
+	mw, stop := RateLimit(RateLimitConfig{
+		Requests:    1,
+		Window:      time.Minute,
+		ExemptPaths: []string{"/public/"},
+	})
+	defer stop()
+	handler := mw(okHandler())
+
+	// Exhaust limit on normal path.
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	// Paths under /public/ are exempt via prefix match.
+	for _, p := range []string{"/public/js/htmx.min.js", "/public/css/style.css", "/public/"} {
+		req = httptest.NewRequest(http.MethodGet, p, nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		rec = httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "expected exempt for %s", p)
+	}
+
+	// Non-matching path is still rate limited.
+	req = httptest.NewRequest(http.MethodGet, "/api/data", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
 
 func TestRateLimit_ExemptFunc_Bypass(t *testing.T) {
