@@ -31,6 +31,9 @@ type RateLimitConfig struct {
 	// ErrorHandler is called when a request is rate limited. When nil, a bare
 	// 429 Too Many Requests response is written with a Retry-After header.
 	ErrorHandler func(http.ResponseWriter, *http.Request)
+	// CleanupInterval is how often the background goroutine removes expired
+	// entries from the in-memory store. When zero, it defaults to Window.
+	CleanupInterval time.Duration
 }
 
 // RateRule defines a rate limit for a specific path.
@@ -52,13 +55,59 @@ type rateLimitStore struct {
 	mu      sync.Mutex
 	windows map[string]*window
 	nowFunc func() time.Time
+	done    chan struct{}
+}
+
+// startCleanup launches a background goroutine that periodically removes
+// expired windows from the store. It uses the store's nowFunc so tests can
+// control time. The goroutine stops when done is closed.
+func (s *rateLimitStore) startCleanup(interval, window time.Duration) {
+	// Determine the longest window to use when PerPath rules exist; callers
+	// pass the maximum across all rules.
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-ticker.C:
+				s.evict(window)
+			}
+		}
+	}()
+}
+
+// evict removes windows that have expired relative to the given duration.
+func (s *rateLimitStore) evict(window time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.nowFunc()
+	for key, w := range s.windows {
+		if now.Sub(w.start) >= window {
+			delete(s.windows, key)
+		}
+	}
+}
+
+// stop signals the cleanup goroutine to exit.
+func (s *rateLimitStore) stop() {
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
 }
 
 // RateLimit returns middleware that enforces fixed-window rate limiting. Each
 // unique key (by default the client IP) is allowed a configured number of
 // requests per time window. Requests that exceed the limit receive a 429
 // response with a Retry-After header indicating when the window resets.
-func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
+//
+// A background goroutine periodically evicts expired entries from the
+// in-memory store. Call the returned stop function to terminate the goroutine
+// (e.g. on graceful shutdown).
+func RateLimit(cfg RateLimitConfig) (mw func(http.Handler) http.Handler, stop func()) {
 	if cfg.Requests <= 0 {
 		panic("dorman: RateLimitConfig.Requests must be greater than zero")
 	}
@@ -87,9 +136,26 @@ func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 	store := &rateLimitStore{
 		windows: make(map[string]*window),
 		nowFunc: time.Now,
+		done:    make(chan struct{}),
 	}
 
-	return buildRateLimitHandler(cfg, store, exemptSet, keyFunc)
+	cleanupInterval := cfg.CleanupInterval
+	if cleanupInterval == 0 {
+		cleanupInterval = cfg.Window
+	}
+
+	// Find the maximum window duration across all rules so the cleanup
+	// goroutine does not evict entries from longer-lived PerPath rules.
+	maxWindow := cfg.Window
+	for _, rule := range cfg.PerPath {
+		if rule.Window > maxWindow {
+			maxWindow = rule.Window
+		}
+	}
+
+	store.startCleanup(cleanupInterval, maxWindow)
+
+	return buildRateLimitHandler(cfg, store, exemptSet, keyFunc), store.stop
 }
 
 // buildRateLimitHandler constructs the rate limiting handler using the given
@@ -182,6 +248,9 @@ type BruteForceConfig struct {
 	// ErrorHandler is called when a request is blocked. When nil, a bare 429
 	// Too Many Requests response is written with a Retry-After header.
 	ErrorHandler func(http.ResponseWriter, *http.Request)
+	// CleanupInterval is how often the background goroutine removes expired
+	// entries from the in-memory store. When zero, it defaults to Cooldown.
+	CleanupInterval time.Duration
 }
 
 // bruteForceEntry tracks failure attempts for a single key.
@@ -192,11 +261,55 @@ type bruteForceEntry struct {
 
 // bruteForceStore holds the internal state for brute force protection.
 type bruteForceStore struct {
-	mu      sync.Mutex
-	entries map[string]*bruteForceEntry
-	nowFunc func() time.Time
-	max     int
+	mu       sync.Mutex
+	entries  map[string]*bruteForceEntry
+	nowFunc  func() time.Time
+	max      int
 	cooldown time.Duration
+	done     chan struct{}
+}
+
+// startCleanup launches a background goroutine that periodically removes
+// expired entries from the store. An entry is considered expired when its
+// cooldown has elapsed (if it was blocked) or when its blockedAt is zero
+// and it has been sitting idle (entries that never reached max are removed
+// after the cooldown duration as a conservative upper bound).
+func (s *bruteForceStore) startCleanup(interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.done:
+				return
+			case <-ticker.C:
+				s.evict()
+			}
+		}
+	}()
+}
+
+// evict removes brute force entries whose cooldown has expired.
+func (s *bruteForceStore) evict() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.nowFunc()
+	for key, entry := range s.entries {
+		if entry.count >= s.max && !entry.blockedAt.IsZero() {
+			if now.Sub(entry.blockedAt) >= s.cooldown {
+				delete(s.entries, key)
+			}
+		}
+	}
+}
+
+// stop signals the cleanup goroutine to exit.
+func (s *bruteForceStore) stop() {
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
 }
 
 type bruteForceCtxKeyType struct{}
@@ -264,7 +377,11 @@ func (bw *bruteForceWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 // and blocks a key after it exceeds MaxAttempts failures. The downstream
 // handler's response status is inspected via a wrapped ResponseWriter. Once
 // blocked, the key is rejected with a 429 response until the Cooldown expires.
-func BruteForceProtect(cfg BruteForceConfig) func(http.Handler) http.Handler {
+//
+// A background goroutine periodically evicts expired entries from the
+// in-memory store. Call the returned stop function to terminate the goroutine
+// (e.g. on graceful shutdown).
+func BruteForceProtect(cfg BruteForceConfig) (mw func(http.Handler) http.Handler, stop func()) {
 	if cfg.MaxAttempts <= 0 {
 		panic("dorman: BruteForceConfig.MaxAttempts must be greater than zero")
 	}
@@ -291,9 +408,17 @@ func BruteForceProtect(cfg BruteForceConfig) func(http.Handler) http.Handler {
 		nowFunc:  time.Now,
 		max:      cfg.MaxAttempts,
 		cooldown: cfg.Cooldown,
+		done:     make(chan struct{}),
 	}
 
-	return buildBruteForceHandler(cfg, store, failureSet, keyFunc)
+	cleanupInterval := cfg.CleanupInterval
+	if cleanupInterval == 0 {
+		cleanupInterval = cfg.Cooldown
+	}
+
+	store.startCleanup(cleanupInterval)
+
+	return buildBruteForceHandler(cfg, store, failureSet, keyFunc), store.stop
 }
 
 // buildBruteForceHandler constructs the brute force handler using the given
