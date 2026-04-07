@@ -144,7 +144,7 @@ editorOrAdmin := dorman.RequireAnyRole(provider, []string{"admin", "editor"})
 handler := editorOrAdmin(mux)
 
 // All of these roles (AND)
-superuser := dorman.RequireAllRoles(provider, "admin", "billing")
+superuser := dorman.RequireAllRoles(provider, []string{"admin", "billing"})
 handler := superuser(mux)
 ```
 
