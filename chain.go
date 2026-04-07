@@ -1,4 +1,4 @@
-package porter
+package dorman
 
 import "net/http"
 
@@ -6,7 +6,7 @@ import "net/http"
 // outermost middleware (applied first on the request path). The returned
 // function accepts a final http.Handler and returns the fully-wrapped handler.
 //
-//	handler := porter.Chain(logging, auth, csrf)(mux)
+//	handler := dorman.Chain(logging, auth, csrf)(mux)
 //
 // is equivalent to:
 //

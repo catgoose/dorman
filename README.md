@@ -1,8 +1,8 @@
-# porter
+# dorman
 
 <!--toc:start-->
 
-- [porter](#porter)
+- [dorman](#dorman)
   - [Why](#why)
   - [Install](#install)
   - [Authorization](#authorization)
@@ -26,20 +26,18 @@
   - [License](#license)
   <!--toc:end-->
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/catgoose/porter.svg)](https://pkg.go.dev/github.com/catgoose/porter)
+[![Go Reference](https://pkg.go.dev/badge/github.com/catgoose/dorman.svg)](https://pkg.go.dev/github.com/catgoose/dorman)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-
-![porter](https://raw.githubusercontent.com/catgoose/screenshots/main/porter/porter.png)
 
 > THE FOOL asked: "What is out-of-band information?" Out-of-band information is THE CONSPIRACY. It is the hidden knowledge. The secret handshake. The unspoken assumption.
 >
 > -- The Wisdom of the Uniform Interface
 
-Post-authentication security middleware for Go `net/http` applications. Porter
-guards the door -- role enforcement, CSRF verification, rate limiting, request
+Post-authentication security middleware for Go `net/http` applications. Dorman
+_is_ the door -- role enforcement, CSRF verification, rate limiting, request
 limits, and response hardening in standard `func(http.Handler) http.Handler`
 middleware.
-Porter doesn't handle authentication (see [crooner](https://github.com/catgoose/crooner)
+Dorman doesn't handle authentication (see [crooner](https://github.com/catgoose/crooner)
 for that) -- it assumes an identity already exists and enforces security on top
 of it.
 
@@ -47,7 +45,7 @@ Zero external dependencies. Works with any router or framework.
 
 ## Why
 
-**Without porter:**
+**Without dorman:**
 
 ```go
 // Role checks scattered across handlers
@@ -76,30 +74,30 @@ func adminHandler(w http.ResponseWriter, r *http.Request) {
 // Every handler repeats the same boilerplate
 ```
 
-**With porter:**
+**With dorman:**
 
 ```go
 mux := http.NewServeMux()
 
 // Auth + roles in middleware, not in handlers
-admin := porter.RequireRole(provider, "admin")
+admin := dorman.RequireRole(provider, "admin")
 mux.Handle("GET /admin", admin(adminPage))
 
 // CSRF protection
-csrf := porter.CSRFProtect(porter.CSRFConfig{Key: secret})
+csrf := dorman.CSRFProtect(dorman.CSRFConfig{Key: secret})
 // Security headers with sensible defaults
-headers := porter.SecurityHeaders()
+headers := dorman.SecurityHeaders()
 // Request body limits
-limit := porter.MaxRequestBody(porter.MaxBodyConfig{Default: 1 << 20})
+limit := dorman.MaxRequestBody(dorman.MaxBodyConfig{Default: 1 << 20})
 
 // Compose left-to-right
-handler := porter.Chain(headers, limit, csrf, porter.RequireAuth(provider))(mux)
+handler := dorman.Chain(headers, limit, csrf, dorman.RequireAuth(provider))(mux)
 ```
 
 ## Install
 
 ```bash
-go get github.com/catgoose/porter
+go get github.com/catgoose/dorman
 ```
 
 ## Authorization
@@ -113,7 +111,7 @@ type IdentityProvider interface {
 ```
 
 Implement this interface to provide identity from any source -- OIDC tokens,
-JWTs, database sessions, request headers. Porter doesn't care where identity
+JWTs, database sessions, request headers. Dorman doesn't care where identity
 comes from, only that it satisfies the interface.
 
 ### RequireAuth
@@ -122,11 +120,11 @@ Rejects unauthenticated requests with 401. The identity is stored on the
 request context for downstream handlers:
 
 ```go
-handler := porter.RequireAuth(provider)(mux)
+handler := dorman.RequireAuth(provider)(mux)
 
 // In a handler:
 mux.HandleFunc("GET /me", func(w http.ResponseWriter, r *http.Request) {
-	id := porter.GetIdentity(r)
+	id := dorman.GetIdentity(r)
 	fmt.Fprintf(w, "Hello, %s", id.Subject())
 })
 ```
@@ -138,15 +136,15 @@ when the identity lacks the required role(s):
 
 ```go
 // Exact role match
-adminOnly := porter.RequireRole(provider, "admin")
+adminOnly := dorman.RequireRole(provider, "admin")
 handler := adminOnly(mux)
 
 // Any of these roles (OR)
-editorOrAdmin := porter.RequireAnyRole(provider, []string{"admin", "editor"})
+editorOrAdmin := dorman.RequireAnyRole(provider, []string{"admin", "editor"})
 handler := editorOrAdmin(mux)
 
 // All of these roles (AND)
-superuser := porter.RequireAllRoles(provider, "admin", "billing")
+superuser := dorman.RequireAllRoles(provider, "admin", "billing")
 handler := superuser(mux)
 ```
 
@@ -157,9 +155,9 @@ Use `AuthErrorHandler` to customize the response -- redirect to a login page,
 return HTML, or write structured errors:
 
 ```go
-auth := porter.RequireAuth(provider, porter.AuthErrorHandler(
+auth := dorman.RequireAuth(provider, dorman.AuthErrorHandler(
 	func(w http.ResponseWriter, r *http.Request, err error) {
-		if errors.Is(err, porter.ErrUnauthorized) {
+		if errors.Is(err, dorman.ErrUnauthorized) {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
@@ -180,7 +178,7 @@ auth middleware already stores identity on the context:
 ```go
 type myAuthKey struct{}
 
-provider := porter.ContextIdentityProvider{ContextKey: myAuthKey{}}
+provider := dorman.ContextIdentityProvider{ContextKey: myAuthKey{}}
 ```
 
 ### Identity interface
@@ -195,7 +193,7 @@ type Identity interface {
 `SimpleIdentity` is a basic implementation:
 
 ```go
-id := porter.SimpleIdentity{ID: "user-42", RoleList: []string{"admin", "editor"}}
+id := dorman.SimpleIdentity{ID: "user-42", RoleList: []string{"admin", "editor"}}
 ```
 
 ## CSRF Protection
@@ -208,17 +206,17 @@ But the server does verify that the request was intentional. CSRF protection
 ensures that state-changing requests come from your UI, not from a malicious
 third party.
 
-Porter implements double-submit cookie CSRF protection with HMAC-SHA256. No
+Dorman implements double-submit cookie CSRF protection with HMAC-SHA256. No
 external dependencies -- stdlib crypto only.
 
 ```go
-csrf := porter.CSRFProtect(porter.CSRFConfig{
+csrf := dorman.CSRFProtect(dorman.CSRFConfig{
 	Key: []byte("32-byte-secret-key-here........."),
 })
 handler := csrf(mux)
 
 // In a handler or template, get the token:
-token := porter.GetToken(r)
+token := dorman.GetToken(r)
 ```
 
 ### How it works
@@ -232,7 +230,7 @@ token := porter.GetToken(r)
 ### Configuration
 
 ```go
-porter.CSRFProtect(porter.CSRFConfig{
+dorman.CSRFProtect(dorman.CSRFConfig{
     Key:              secret,             // required, 32 bytes
     FieldName:        "csrf_token",       // form field name (default)
     RequestHeader:    "X-CSRF-Token",     // header name (default)
@@ -273,16 +271,16 @@ Render the token in a `<meta>` tag and attach it via an HTMX listener:
 One middleware, sensible defaults, every security header you need:
 
 ```go
-handler := porter.SecurityHeaders()(mux) // defaults for everything
+handler := dorman.SecurityHeaders()(mux) // defaults for everything
 ```
 
 Or customize:
 
 ```go
-handler := porter.SecurityHeaders(porter.SecurityHeadersConfig{
+handler := dorman.SecurityHeaders(dorman.SecurityHeadersConfig{
 	// HSTS is disabled by default -- opt in when serving over TLS:
-	HSTS:                  &porter.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
-	// or use the helper: HSTS: porter.DefaultHSTSConfig(),
+	HSTS:                  &dorman.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
+	// or use the helper: HSTS: dorman.DefaultHSTSConfig(),
 	ContentSecurityPolicy: "default-src 'self'",
 	PermissionsPolicy:     "camera=(), microphone=()",
 })(mux)
@@ -307,9 +305,9 @@ Enable HSTS when serving over TLS:
 
 ```go
 // Enable HSTS with sensible defaults (2 years, includeSubDomains):
-cfg := porter.DefaultSecurityHeadersConfig()
-cfg.HSTS = porter.DefaultHSTSConfig()
-handler := porter.SecurityHeaders(cfg)(mux)
+cfg := dorman.DefaultSecurityHeadersConfig()
+cfg.HSTS = dorman.DefaultHSTSConfig()
+handler := dorman.SecurityHeaders(cfg)(mux)
 ```
 
 ## Request Body Limits
@@ -322,7 +320,7 @@ Wraps `http.MaxBytesReader` with configurable per-path limits and custom
 error handling. Prevents oversized payloads from reaching your handlers:
 
 ```go
-limit := porter.MaxRequestBody(porter.MaxBodyConfig{
+limit := dorman.MaxRequestBody(dorman.MaxBodyConfig{
     Default: 1 << 20, // 1 MB default
     PerPath: map[string]int64{
         "/upload": 10 << 20, // 10 MB for uploads
@@ -335,7 +333,7 @@ When a request exceeds the limit, the default response is `413 Request Entity
 Too Large`. Provide an `ErrorHandler` to customize:
 
 ```go
-limit := porter.MaxRequestBody(porter.MaxBodyConfig{
+limit := dorman.MaxRequestBody(dorman.MaxBodyConfig{
     Default: 1 << 20,
     ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
         http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
@@ -353,7 +351,7 @@ Fixed-window rate limiting with per-path overrides, custom key functions, and
 exemptions. No external dependencies -- pure stdlib.
 
 ```go
-limiter := porter.RateLimit(porter.RateLimitConfig{
+limiter := dorman.RateLimit(dorman.RateLimitConfig{
     Requests: 100,
     Window:   time.Minute,
 })
@@ -365,10 +363,10 @@ handler := limiter(mux)
 Stricter limits for sensitive endpoints:
 
 ```go
-limiter := porter.RateLimit(porter.RateLimitConfig{
+limiter := dorman.RateLimit(dorman.RateLimitConfig{
     Requests: 100,
     Window:   time.Minute,
-    PerPath: map[string]porter.RateRule{
+    PerPath: map[string]dorman.RateRule{
         "/login": {Requests: 5, Window: time.Minute},
         "/api/expensive": {Requests: 10, Window: time.Minute},
     },
@@ -380,7 +378,7 @@ limiter := porter.RateLimit(porter.RateLimitConfig{
 Rate limit by something other than IP:
 
 ```go
-limiter := porter.RateLimit(porter.RateLimitConfig{
+limiter := dorman.RateLimit(dorman.RateLimitConfig{
     Requests: 100,
     Window:   time.Minute,
     KeyFunc: func(r *http.Request) string {
@@ -392,11 +390,11 @@ limiter := porter.RateLimit(porter.RateLimitConfig{
 ### Rate limit configuration
 
 ```go
-porter.RateLimit(porter.RateLimitConfig{
+dorman.RateLimit(dorman.RateLimitConfig{
     Requests:    100,                   // max requests per window (required)
     Window:      time.Minute,           // window duration (required)
-    KeyFunc:     porter.IPKey,          // key extractor (default: IPKey)
-    PerPath:     map[string]porter.RateRule{"/login": {Requests: 5, Window: time.Minute}},
+    KeyFunc:     dorman.IPKey,          // key extractor (default: IPKey)
+    PerPath:     map[string]dorman.RateRule{"/login": {Requests: 5, Window: time.Minute}},
     ExemptPaths: []string{"/health"},
     ExemptFunc:  func(r *http.Request) bool { return r.Header.Get("X-API-Key") != "" },
     ErrorHandler: func(w http.ResponseWriter, r *http.Request) { ... },
@@ -410,7 +408,7 @@ Designed for login and authentication endpoints where repeated 401 responses
 indicate a brute-force attack.
 
 ```go
-brute := porter.BruteForceProtect(porter.BruteForceConfig{
+brute := dorman.BruteForceProtect(dorman.BruteForceConfig{
     MaxAttempts: 5,
     Cooldown:    15 * time.Minute,
 })
@@ -425,7 +423,7 @@ locked out after a few typos:
 ```go
 mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
     if authenticate(r) {
-        porter.ResetFailures(r)
+        dorman.ResetFailures(r)
         w.WriteHeader(http.StatusOK)
         return
     }
@@ -436,10 +434,10 @@ mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 ### Brute force configuration
 
 ```go
-porter.BruteForceProtect(porter.BruteForceConfig{
+dorman.BruteForceProtect(dorman.BruteForceConfig{
     MaxAttempts:   5,                    // failures before blocking (required)
     Cooldown:      15 * time.Minute,     // block duration (required)
-    KeyFunc:       porter.IPKey,         // key extractor (default: IPKey)
+    KeyFunc:       dorman.IPKey,         // key extractor (default: IPKey)
     FailureStatus: []int{401},           // status codes that count as failures (default: [401])
     ErrorHandler:  func(w http.ResponseWriter, r *http.Request) { ... },
 })
@@ -456,7 +454,7 @@ argument is the outermost middleware:
 handler := headers(limit(csrf(auth(mux))))
 
 // Write this:
-handler := porter.Chain(headers, limit, csrf, auth)(mux)
+handler := dorman.Chain(headers, limit, csrf, auth)(mux)
 ```
 
 `Chain` returns a `func(http.Handler) http.Handler`, so it composes with
@@ -465,7 +463,7 @@ everything else in the standard middleware idiom.
 ## With crooner
 
 [Crooner](https://github.com/catgoose/crooner) handles authentication (OIDC,
-OAuth2, session management). Porter layers on top for authorization and
+OAuth2, session management). Dorman layers on top for authorization and
 security. The two libraries share the same interface conventions -- wiring
 them together requires no adapters.
 
@@ -473,26 +471,26 @@ them together requires no adapters.
 // crooner: "who are you?"
 authCfg, _ := crooner.NewAuthConfig(ctx, params)
 
-// porter: "are you allowed?"
-admin := porter.RequireRole(provider, "admin")
+// dorman: "are you allowed?"
+admin := dorman.RequireRole(provider, "admin")
 
-// porter: request and response security
-csrf := porter.CSRFProtect(porter.CSRFConfig{Key: secret})
-headers := porter.SecurityHeaders()
-limit := porter.MaxRequestBody(porter.MaxBodyConfig{Default: 1 << 20})
+// dorman: request and response security
+csrf := dorman.CSRFProtect(dorman.CSRFConfig{Key: secret})
+headers := dorman.SecurityHeaders()
+limit := dorman.MaxRequestBody(dorman.MaxBodyConfig{Default: 1 << 20})
 
-handler := porter.Chain(headers, limit, csrf, authCfg.Middleware())(mux)
+handler := dorman.Chain(headers, limit, csrf, authCfg.Middleware())(mux)
 ```
 
 ## Philosophy
 
-Porter follows the [dothog design philosophy](https://github.com/catgoose/dothog/blob/main/PHILOSOPHY.md): standard middleware signatures, zero external dependencies, and the server handles security so handlers can focus on business logic.
+Dorman follows the [dothog design philosophy](https://github.com/catgoose/dothog/blob/main/PHILOSOPHY.md): standard middleware signatures, zero external dependencies, and the server handles security so handlers can focus on business logic.
 
 > The whole point -- the ENTIRE POINT -- of hypermedia is that the server tells the client what to do next IN THE RESPONSE ITSELF.
 >
 > -- The Wisdom of the Uniform Interface
 
-Porter tells the client three things: whether you're allowed in (authz), whether your request is legitimate (CSRF), and how the browser should behave (security headers). All in the middleware, before your handler runs.
+Dorman tells the client three things: whether you're allowed in (authz), whether your request is legitimate (CSRF), and how the browser should behave (security headers). All in the middleware, before your handler runs.
 
 ## Architecture
 

@@ -1,4 +1,4 @@
-package porter
+package dorman
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 
 // Sentinel errors returned by CSRF middleware.
 var (
-	ErrCSRFTokenMissing = errors.New("porter: CSRF token missing")
-	ErrCSRFTokenInvalid = errors.New("porter: CSRF token invalid")
+	ErrCSRFTokenMissing = errors.New("dorman: CSRF token missing")
+	ErrCSRFTokenInvalid = errors.New("dorman: CSRF token invalid")
 )
 
 type csrfTokenKeyType struct{}

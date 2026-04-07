@@ -1,4 +1,4 @@
-package porter
+package dorman
 
 import (
 	"context"
@@ -12,10 +12,10 @@ var identityCtxKey identityKeyType
 
 // Sentinel errors returned by authorization middleware and identity providers.
 var (
-	ErrNoIdentity      = errors.New("porter: no identity in context")
-	ErrInvalidIdentity = errors.New("porter: identity value is not a porter.Identity")
-	ErrForbidden       = errors.New("porter: forbidden")
-	ErrUnauthorized    = errors.New("porter: unauthorized")
+	ErrNoIdentity      = errors.New("dorman: no identity in context")
+	ErrInvalidIdentity = errors.New("dorman: identity value is not a dorman.Identity")
+	ErrForbidden       = errors.New("dorman: forbidden")
+	ErrUnauthorized    = errors.New("dorman: unauthorized")
 )
 
 // Identity represents an authenticated subject with roles.
@@ -36,7 +36,7 @@ func (s SimpleIdentity) Subject() string { return s.ID }
 func (s SimpleIdentity) Roles() []string { return s.RoleList }
 
 // IdentityProvider extracts identity from a request.
-// Crooner's session satisfies this; porter also ships [ContextIdentityProvider]
+// Crooner's session satisfies this; dorman also ships [ContextIdentityProvider]
 // for reading identity set by external auth middleware.
 type IdentityProvider interface {
 	GetIdentity(r *http.Request) (Identity, error)

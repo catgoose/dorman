@@ -1,4 +1,4 @@
-module github.com/catgoose/porter
+module github.com/catgoose/dorman
 
 go 1.26.1
 
