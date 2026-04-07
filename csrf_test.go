@@ -579,6 +579,88 @@ func TestOriginValidation_RefererFallback(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, postRec2.Code)
 }
 
+// TestPOST_EmptyTokenHeader_Returns403 verifies that submitting an empty CSRF
+// token in the header is rejected with 403.
+func TestPOST_EmptyTokenHeader_Returns403(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFProtect(minimalCfg())(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	// Submit empty token via header.
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", "")
+	})
+	require.Equal(t, http.StatusForbidden, postRec.Code)
+}
+
+// TestPOST_EmptyTokenFormField_Returns403 verifies that submitting an empty
+// CSRF token via form field is rejected with 403.
+func TestPOST_EmptyTokenFormField_Returns403(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFProtect(minimalCfg())(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	form := url.Values{"csrf_token": {""}}
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(nonceCookie)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+// TestUnmaskToken_ZeroLengthMaskedToken_Returns403 verifies that submitting a
+// zero-length string as the CSRF token (unmaskToken gets len==0) returns 403.
+func TestUnmaskToken_ZeroLengthMaskedToken_Returns403(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFProtect(minimalCfg())(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	// A POST with just a cookie but no token field at all should be 403.
+	// This differs from the empty-header test: here no header or form field is set.
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.AddCookie(nonceCookie)
+	})
+	require.Equal(t, http.StatusForbidden, postRec.Code)
+}
+
+// TestUnmaskToken_TwoHexChars_Returns403 verifies that a very short but valid
+// hex token (e.g. "aabb" → pad=0xAA, masked=0xBB) is rejected because the
+// recovered HMAC won't match the expected 32-byte HMAC.
+func TestUnmaskToken_TwoHexChars_Returns403(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFProtect(minimalCfg())(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", "aabb") // valid hex, wrong length for HMAC
+	})
+	require.Equal(t, http.StatusForbidden, postRec.Code)
+}
+
 // TestUnmaskToken_OddLengthReturns403 verifies that a submitted token with an
 // odd number of characters is rejected (unmaskToken returns nil for odd-length).
 func TestUnmaskToken_OddLengthReturns403(t *testing.T) {
