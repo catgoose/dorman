@@ -135,7 +135,8 @@ func RequireRole(provider IdentityProvider, role string, opts ...AuthOption) fun
 // RequireAllRoles returns middleware that requires the identity to have all of
 // the given roles. Unauthenticated requests receive 401; authenticated requests
 // missing any role receive 403.
-func RequireAllRoles(provider IdentityProvider, roles ...string) func(http.Handler) http.Handler {
+func RequireAllRoles(provider IdentityProvider, roles []string, opts ...AuthOption) func(http.Handler) http.Handler {
+	cfg := buildAuthConfig(opts)
 	want := make(map[string]struct{}, len(roles))
 	for _, r := range roles {
 		want[r] = struct{}{}
@@ -144,7 +145,7 @@ func RequireAllRoles(provider IdentityProvider, roles ...string) func(http.Handl
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id, err := provider.GetIdentity(r)
 			if err != nil || id == nil {
-				http.Error(w, "", http.StatusUnauthorized)
+				authFail(w, r, ErrUnauthorized, http.StatusUnauthorized, cfg)
 				return
 			}
 			have := make(map[string]struct{}, len(id.Roles()))
@@ -153,7 +154,7 @@ func RequireAllRoles(provider IdentityProvider, roles ...string) func(http.Handl
 			}
 			for needed := range want {
 				if _, ok := have[needed]; !ok {
-					http.Error(w, "", http.StatusForbidden)
+					authFail(w, r, ErrForbidden, http.StatusForbidden, cfg)
 					return
 				}
 			}

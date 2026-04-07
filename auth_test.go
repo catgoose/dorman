@@ -379,7 +379,7 @@ func TestRequireAllRoles(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mw := RequireAllRoles(tt.provider, tt.roles...)
+			mw := RequireAllRoles(tt.provider, tt.roles)
 			handler := mw(ok)
 
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -389,6 +389,49 @@ func TestRequireAllRoles(t *testing.T) {
 			require.Equal(t, tt.wantCode, rec.Code)
 		})
 	}
+}
+
+func TestAuthErrorHandler_RequireAllRoles_Forbidden(t *testing.T) {
+	id := SimpleIdentity{ID: "user-1", RoleList: []string{"viewer"}}
+	provider := &staticProvider{identity: id}
+
+	var gotErr error
+	handler := RequireAllRoles(provider, []string{"admin", "editor"}, AuthErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		gotErr = err
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte("missing required role"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	require.ErrorIs(t, gotErr, ErrForbidden)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Equal(t, "missing required role", rec.Body.String())
+}
+
+func TestAuthErrorHandler_RequireAllRoles_Unauthorized(t *testing.T) {
+	provider := &staticProvider{err: ErrNoIdentity}
+
+	var gotErr error
+	handler := RequireAllRoles(provider, []string{"admin"}, AuthErrorHandler(func(w http.ResponseWriter, r *http.Request, err error) {
+		gotErr = err
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("login required"))
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+	handler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	require.ErrorIs(t, gotErr, ErrUnauthorized)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+	require.Equal(t, "login required", rec.Body.String())
 }
 
 // Compile-time interface checks.
