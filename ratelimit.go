@@ -58,6 +58,21 @@ type rateLimitStore struct {
 // requests per time window. Requests that exceed the limit receive a 429
 // response with a Retry-After header indicating when the window resets.
 func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
+	if cfg.Requests <= 0 {
+		panic("dorman: RateLimitConfig.Requests must be greater than zero")
+	}
+	if cfg.Window <= 0 {
+		panic("dorman: RateLimitConfig.Window must be greater than zero")
+	}
+	for path, rule := range cfg.PerPath {
+		if rule.Requests <= 0 {
+			panic(fmt.Sprintf("dorman: RateLimitConfig.PerPath[%q].Requests must be greater than zero", path))
+		}
+		if rule.Window <= 0 {
+			panic(fmt.Sprintf("dorman: RateLimitConfig.PerPath[%q].Window must be greater than zero", path))
+		}
+	}
+
 	keyFunc := cfg.KeyFunc
 	if keyFunc == nil {
 		keyFunc = IPKey
@@ -228,6 +243,13 @@ func (bw *bruteForceWriter) WriteHeader(code int) {
 // handler's response status is inspected via a wrapped ResponseWriter. Once
 // blocked, the key is rejected with a 429 response until the Cooldown expires.
 func BruteForceProtect(cfg BruteForceConfig) func(http.Handler) http.Handler {
+	if cfg.MaxAttempts <= 0 {
+		panic("dorman: BruteForceConfig.MaxAttempts must be greater than zero")
+	}
+	if cfg.Cooldown <= 0 {
+		panic("dorman: BruteForceConfig.Cooldown must be greater than zero")
+	}
+
 	keyFunc := cfg.KeyFunc
 	if keyFunc == nil {
 		keyFunc = IPKey

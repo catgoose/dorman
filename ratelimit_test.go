@@ -30,6 +30,58 @@ func fakeNow() (func() time.Time, func(time.Duration)) {
 		func(d time.Duration) { now = now.Add(d) }
 }
 
+// --- RateLimit validation tests ---
+
+func TestRateLimit_PanicsOnZeroRequests(t *testing.T) {
+	require.PanicsWithValue(t, "dorman: RateLimitConfig.Requests must be greater than zero", func() {
+		RateLimit(RateLimitConfig{Requests: 0, Window: time.Minute})
+	})
+}
+
+func TestRateLimit_PanicsOnZeroWindow(t *testing.T) {
+	require.PanicsWithValue(t, "dorman: RateLimitConfig.Window must be greater than zero", func() {
+		RateLimit(RateLimitConfig{Requests: 5, Window: 0})
+	})
+}
+
+func TestRateLimit_PanicsOnInvalidPerPathRequests(t *testing.T) {
+	require.Panics(t, func() {
+		RateLimit(RateLimitConfig{
+			Requests: 5,
+			Window:   time.Minute,
+			PerPath: map[string]RateRule{
+				"/api": {Requests: 0, Window: time.Minute},
+			},
+		})
+	})
+}
+
+func TestRateLimit_PanicsOnInvalidPerPathWindow(t *testing.T) {
+	require.Panics(t, func() {
+		RateLimit(RateLimitConfig{
+			Requests: 5,
+			Window:   time.Minute,
+			PerPath: map[string]RateRule{
+				"/api": {Requests: 10, Window: 0},
+			},
+		})
+	})
+}
+
+// --- BruteForceProtect validation tests ---
+
+func TestBruteForceProtect_PanicsOnZeroMaxAttempts(t *testing.T) {
+	require.PanicsWithValue(t, "dorman: BruteForceConfig.MaxAttempts must be greater than zero", func() {
+		BruteForceProtect(BruteForceConfig{MaxAttempts: 0, Cooldown: time.Minute})
+	})
+}
+
+func TestBruteForceProtect_PanicsOnZeroCooldown(t *testing.T) {
+	require.PanicsWithValue(t, "dorman: BruteForceConfig.Cooldown must be greater than zero", func() {
+		BruteForceProtect(BruteForceConfig{MaxAttempts: 5, Cooldown: 0})
+	})
+}
+
 // --- RateLimit tests ---
 
 func TestRateLimit_UnderLimit_Passes(t *testing.T) {

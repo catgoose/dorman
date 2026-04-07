@@ -44,6 +44,26 @@ func extractCookie(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 	return nil
 }
 
+// --- CSRFProtect validation tests ---
+
+func TestCSRFProtect_PanicsOnEmptyKey(t *testing.T) {
+	require.PanicsWithValue(t, "dorman: CSRFConfig.Key must be at least 32 bytes", func() {
+		CSRFProtect(CSRFConfig{})
+	})
+}
+
+func TestCSRFProtect_PanicsOnShortKey(t *testing.T) {
+	require.PanicsWithValue(t, "dorman: CSRFConfig.Key must be at least 32 bytes", func() {
+		CSRFProtect(CSRFConfig{Key: []byte("short")})
+	})
+}
+
+func TestCSRFProtect_AcceptsValidKey(t *testing.T) {
+	require.NotPanics(t, func() {
+		CSRFProtect(minimalCfg())
+	})
+}
+
 // TestGET_SetsCookieAndContextToken verifies that a GET request causes the
 // middleware to issue a CSRF cookie and store the token on the context.
 func TestGET_SetsCookieAndContextToken(t *testing.T) {
