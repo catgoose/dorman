@@ -1,7 +1,10 @@
 package dorman
 
 import (
+	"bufio"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 )
@@ -46,6 +49,27 @@ func (m *maxBodyWriter) Write(b []byte) (int, error) {
 		return io.Discard.Write(b)
 	}
 	return m.ResponseWriter.Write(b)
+}
+
+// Unwrap returns the underlying ResponseWriter so that [http.NewResponseController]
+// can access optional interfaces on the original writer.
+func (m *maxBodyWriter) Unwrap() http.ResponseWriter {
+	return m.ResponseWriter
+}
+
+// Flush delegates to the underlying ResponseWriter if it implements [http.Flusher].
+func (m *maxBodyWriter) Flush() {
+	if f, ok := m.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack delegates to the underlying ResponseWriter if it implements [http.Hijacker].
+func (m *maxBodyWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := m.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("dorman: underlying ResponseWriter does not implement http.Hijacker")
 }
 
 // MaxRequestBody returns middleware that limits request body size using

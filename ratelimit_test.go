@@ -3,11 +3,104 @@ package dorman
 import (
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestBruteForceWriter_Unwrap(t *testing.T) {
+	inner := httptest.NewRecorder()
+	w := &bruteForceWriter{ResponseWriter: inner}
+	require.Equal(t, http.ResponseWriter(inner), w.Unwrap())
+}
+
+func TestBruteForceWriter_Flush_Delegates(t *testing.T) {
+	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
+	w := &bruteForceWriter{ResponseWriter: inner}
+	w.Flush()
+	require.True(t, inner.flushed)
+}
+
+func TestBruteForceWriter_Flush_NoopWhenNotSupported(t *testing.T) {
+	inner := newPlainResponseWriter()
+	w := &bruteForceWriter{ResponseWriter: inner}
+	w.Flush()
+}
+
+func TestBruteForceWriter_Hijack_Delegates(t *testing.T) {
+	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
+	w := &bruteForceWriter{ResponseWriter: inner}
+	_, _, err := w.Hijack()
+	require.NoError(t, err)
+	require.True(t, inner.hijacked)
+}
+
+func TestBruteForceWriter_Hijack_ErrorWhenNotSupported(t *testing.T) {
+	inner := newPlainResponseWriter()
+	w := &bruteForceWriter{ResponseWriter: inner}
+	_, _, err := w.Hijack()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "http.Hijacker")
+}
+
+func TestBruteForceWriter_InterfacePreservation_ThroughMiddleware(t *testing.T) {
+	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
+
+	var capturedWriter http.ResponseWriter
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedWriter = w
+		w.WriteHeader(http.StatusOK)
+	})
+
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  time.Now,
+		max:      5,
+		cooldown: time.Minute,
+	}
+	failureSet := map[int]bool{http.StatusUnauthorized: true}
+	mw := buildBruteForceHandler(BruteForceConfig{MaxAttempts: 5, Cooldown: time.Minute}, store, failureSet, IPKey)
+
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	mw(handler).ServeHTTP(inner, req)
+
+	_, ok := capturedWriter.(http.Flusher)
+	require.True(t, ok, "bruteForceWriter should implement http.Flusher")
+
+	_, ok = capturedWriter.(http.Hijacker)
+	require.True(t, ok, "bruteForceWriter should implement http.Hijacker")
+
+	rc := http.NewResponseController(capturedWriter)
+	require.NotNil(t, rc)
+}
+
+// Verify bruteForceWriter still tracks failures correctly with the new methods.
+func TestBruteForceWriter_StillTracksFailures(t *testing.T) {
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  time.Now,
+		max:      2,
+		cooldown: time.Minute,
+	}
+	w := &bruteForceWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		store:          store,
+		key:            "testkey",
+		failureSet:     map[int]bool{401: true},
+		once:           sync.Once{},
+	}
+	w.WriteHeader(401)
+
+	store.mu.Lock()
+	entry := store.entries["testkey"]
+	store.mu.Unlock()
+
+	require.NotNil(t, entry)
+	require.Equal(t, 1, entry.count)
+}
 
 // okHandler writes a 200 response.
 func okHandler() http.Handler {
