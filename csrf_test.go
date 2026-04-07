@@ -796,9 +796,9 @@ func TestOriginValidation_RefererNoSlashAfterHost(t *testing.T) {
 	require.Equal(t, http.StatusOK, postRec.Code)
 }
 
-// TestOriginValidation_BareHostMatch verifies that an Origin header containing
-// just the bare hostname (no scheme) is accepted when it matches the request host.
-func TestOriginValidation_BareHostMatch(t *testing.T) {
+// TestOriginValidation_BareHostRejected verifies that an Origin header containing
+// just the bare hostname (no scheme) is rejected when ValidateOrigin is enabled.
+func TestOriginValidation_BareHostRejected(t *testing.T) {
 	var token string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token = GetToken(r)
@@ -818,7 +818,7 @@ func TestOriginValidation_BareHostMatch(t *testing.T) {
 		r.AddCookie(nonceCookie)
 		r.Header.Set("X-CSRF-Token", token)
 	})
-	require.Equal(t, http.StatusOK, postRec.Code)
+	require.Equal(t, http.StatusForbidden, postRec.Code)
 }
 
 // TestPOST_WithValidToken_AfterRotatePerRequest verifies that after rotation
@@ -1056,9 +1056,10 @@ func TestOriginValidation_TrustedOriginsOverridesScheme(t *testing.T) {
 	require.Equal(t, http.StatusOK, postRec.Code)
 }
 
-// TestOriginValidation_BareHostStillWorks verifies that an Origin header with
-// just the bare hostname (no scheme) is still accepted.
-func TestOriginValidation_BareHostStillWorks(t *testing.T) {
+// TestOriginValidation_BareHostRejectedWithValidateOrigin verifies that an
+// Origin header with just the bare hostname (no scheme) is rejected when
+// ValidateOrigin is enabled, even if it matches the request host.
+func TestOriginValidation_BareHostRejectedWithValidateOrigin(t *testing.T) {
 	var token string
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token = GetToken(r)
@@ -1078,7 +1079,7 @@ func TestOriginValidation_BareHostStillWorks(t *testing.T) {
 		r.AddCookie(nonceCookie)
 		r.Header.Set("X-CSRF-Token", token)
 	})
-	require.Equal(t, http.StatusOK, postRec.Code)
+	require.Equal(t, http.StatusForbidden, postRec.Code)
 }
 
 // doFuzzRequest is like doRequest but does not require a *testing.T, making it

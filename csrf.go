@@ -223,10 +223,6 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 		if origin == scheme+requestHost {
 			return true
 		}
-		// Also accept bare host match (e.g. when origin header is just host).
-		if origin == requestHost {
-			return true
-		}
 
 		// Check trusted origins list.
 		if trustedOriginSet[origin] {
