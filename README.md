@@ -231,7 +231,7 @@ token := dorman.GetToken(r)
 
 ```go
 dorman.CSRFProtect(dorman.CSRFConfig{
-    Key:              secret,             // required, 32 bytes
+    Key:              secret,             // required, at least 32 bytes
     FieldName:        "csrf_token",       // form field name (default)
     RequestHeader:    "X-CSRF-Token",     // header name (default)
     CookieName:       "_csrf",            // cookie name (default)

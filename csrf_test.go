@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testKey is a 32-byte HMAC key used in tests.
+// testKey is a 32-byte HMAC key used in tests (the minimum accepted length).
 var testKey = []byte("00000000000000000000000000000000")
 
 // minimalCfg returns a CSRFConfig with only the required Key set; all other
@@ -61,6 +61,16 @@ func TestCSRFProtect_PanicsOnShortKey(t *testing.T) {
 func TestCSRFProtect_AcceptsValidKey(t *testing.T) {
 	require.NotPanics(t, func() {
 		CSRFProtect(minimalCfg())
+	})
+}
+
+func TestCSRFProtect_AcceptsKeyLongerThan32Bytes(t *testing.T) {
+	longKey := make([]byte, 64)
+	for i := range longKey {
+		longKey[i] = 'A'
+	}
+	require.NotPanics(t, func() {
+		CSRFProtect(CSRFConfig{Key: longKey})
 	})
 }
 
