@@ -464,10 +464,10 @@ Keep these constraints in mind when deploying:
 - **Background eviction** -- both stores run a background cleanup goroutine
   (configurable via `CleanupInterval`) that periodically removes stale entries.
   Rate limit windows are evicted once `now - start >= window duration`. Brute
-  force entries are evicted once a blocked key's cooldown expires. However,
-  sub-threshold brute force entries (keys that have not yet hit `MaxAttempts`)
-  are **not** evicted and will persist until restart (see [#21](https://github.com/catgoose/dorman/issues/21)).
-  Under high cardinality of sub-threshold keys, memory may still grow.
+  force entries are evicted once a blocked key's cooldown expires.
+  Sub-threshold brute force entries (keys that have not yet hit `MaxAttempts`)
+  are also evicted once they have been idle (based on `lastSeen`) longer than
+  the cooldown duration.
 - **Graceful shutdown** -- both `RateLimit` and `BruteForceProtect` return a
   `stop` function. Call it (e.g. via `defer stop()`) to terminate the
   background cleanup goroutine when the server shuts down.
