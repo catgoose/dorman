@@ -19,6 +19,17 @@
   - [Security Headers](#security-headers)
     - [Default headers](#default-headers)
   - [Request Body Limits](#request-body-limits)
+  - [Rate Limiting](#rate-limiting)
+    - [Per-path overrides](#per-path-overrides)
+    - [Custom key function](#custom-key-function)
+    - [Rate limit configuration](#rate-limit-configuration)
+  - [Brute Force Protection](#brute-force-protection)
+    - [Resetting on success](#resetting-on-success)
+    - [Brute force configuration](#brute-force-configuration)
+  - [IPKey](#ipkey)
+  - [Deployment considerations](#deployment-considerations)
+  - [Sentinel Errors](#sentinel-errors)
+  - [Config Validation](#config-validation)
   - [Middleware Chain](#middleware-chain)
   - [With crooner](#with-crooner)
   - [Philosophy](#philosophy)
@@ -226,6 +237,7 @@ token := dorman.GetToken(r)
 3. Safe methods (GET, HEAD, OPTIONS, TRACE) set the cookie and context but skip validation
 4. Unsafe methods with `Sec-Fetch-Site: same-origin` skip token validation entirely -- the browser guarantees the request originated from the same origin (94%+ browser coverage)
 5. All other unsafe methods validate: the submitted token must match the expected HMAC -- checked from the request header first, then the form field
+6. When `ValidateOrigin` is enabled, the `Origin` header is checked against the request host and any `TrustedOrigins` -- bare-host values (without a scheme) are rejected
 
 ### Configuration
 
@@ -410,6 +422,12 @@ defer stop() // stop background cleanup goroutine
 
 ## Brute Force Protection
 
+> Big Brain Developer come to Grug and say "Grug, I have achieved enlightenment.
+> I have built a micro-frontend architecture with seventeen independently
+> deployable SPAs." Grug say nothing for long time. Then Grug say "what it do"
+>
+> -- The Recorded Sayings of Layman Grug
+
 Tracks failed response status codes and blocks a key after too many failures.
 Designed for login and authentication endpoints where repeated 401 responses
 indicate a brute-force attack.
@@ -422,6 +440,11 @@ brute, stop := dorman.BruteForceProtect(dorman.BruteForceConfig{
 defer stop() // stop background cleanup goroutine on shutdown
 handler := brute(mux)
 ```
+
+The brute force middleware wraps the `http.ResponseWriter` to intercept status
+codes. The wrapper preserves optional interfaces (`http.Flusher`, `http.Hijacker`,
+`http.Pusher`) so it composes safely with SSE, WebSocket upgrades, and HTTP/2
+push.
 
 ### Resetting on success
 
@@ -453,7 +476,31 @@ mw, stop := dorman.BruteForceProtect(dorman.BruteForceConfig{
 defer stop() // stop background cleanup goroutine
 ```
 
-### Deployment considerations
+## IPKey
+
+Both `RateLimit` and `BruteForceProtect` default to `IPKey` for identifying
+clients. `IPKey` checks `X-Forwarded-For` first (using the leftmost IP), then
+falls back to `r.RemoteAddr`:
+
+```go
+// Used automatically when KeyFunc is nil.
+// Or pass it explicitly:
+limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
+    Requests: 100,
+    Window:   time.Minute,
+    KeyFunc:  dorman.IPKey,
+})
+```
+
+When running behind a reverse proxy, ensure `X-Forwarded-For` is set by a
+trusted layer -- dorman trusts whatever value is present.
+
+## Deployment considerations
+
+> past is already past -- don't debug it. future not here yet -- don't optimize
+> for it. server return html -- this present moment.
+>
+> -- Layman Grug
 
 Both rate limiting and brute force protection store all state in process memory.
 Keep these constraints in mind when deploying:
@@ -480,6 +527,63 @@ sufficient. When you need shared state across instances or persistence across
 restarts, put a dedicated rate-limiting layer in front (e.g. a reverse proxy,
 API gateway, or external store) and use dorman as a local safety net.
 
+## Sentinel Errors
+
+> A resource is the thing-in-itself, the Ding an sich, the Platonic form of your
+> user table. You never touch it directly.
+>
+> -- The Wisdom of the Uniform Interface
+
+Dorman exports sentinel errors for programmatic error handling:
+
+**Authorization:**
+
+| Error              | Meaning                                                |
+| ------------------ | ------------------------------------------------------ |
+| `ErrUnauthorized`  | No identity found (401)                                |
+| `ErrForbidden`     | Identity lacks required role(s) (403)                  |
+| `ErrNoIdentity`    | `ContextIdentityProvider` found no value in context    |
+| `ErrInvalidIdentity` | Context value does not implement `Identity`          |
+
+**CSRF:**
+
+| Error                | Meaning                                              |
+| -------------------- | ---------------------------------------------------- |
+| `ErrCSRFTokenMissing` | No token in header or form field                    |
+| `ErrCSRFTokenInvalid` | Token does not match expected HMAC                  |
+
+Use `errors.Is` to match:
+
+```go
+csrf := dorman.CSRFProtect(dorman.CSRFConfig{
+    Key: secret,
+    ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
+        // The CSRF error is available via the request context's error
+        http.Error(w, "CSRF validation failed", http.StatusForbidden)
+    },
+})
+```
+
+## Config Validation
+
+> Student ask Grug about complexity. Grug say: "you do not defeat. you say the
+> magic word." Student lean forward. "what is the magic word?" Grug say: "no."
+>
+> -- The Recorded Sayings of Layman Grug
+
+Dorman panics at startup when required config fields are missing or invalid.
+This catches misconfigurations during initialization rather than silently
+misbehaving at runtime:
+
+| Constructor          | Panics when                                                         |
+| -------------------- | ------------------------------------------------------------------- |
+| `CSRFProtect`        | `Key` is less than 32 bytes                                         |
+| `RateLimit`          | `Requests` or `Window` is zero; same for any `PerPath` entry        |
+| `BruteForceProtect`  | `MaxAttempts` or `Cooldown` is zero                                 |
+
+This is intentional -- a misconfigured security middleware that silently passes
+all requests is worse than a loud crash at boot.
+
 ## Middleware Chain
 
 Composing middleware with nested calls works for two or three layers but
@@ -498,6 +602,11 @@ handler := dorman.Chain(headers, limit, csrf, auth)(mux)
 everything else in the standard middleware idiom.
 
 ## With crooner
+
+> Enter the application with a single URI and a set of standardized media types.
+> Follow the links. Submit the forms. Let the server drive the state. That is all.
+>
+> -- The Wisdom of the Uniform Interface
 
 [Crooner](https://github.com/catgoose/crooner) handles authentication (OIDC,
 OAuth2, session management). Dorman layers on top for authorization and
