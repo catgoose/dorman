@@ -30,7 +30,7 @@ type csrfMasker struct {
 
 // CSRFConfig configures the CSRF protection middleware.
 type CSRFConfig struct {
-	// Key is a 32-byte HMAC key. Required.
+	// Key is the HMAC key used for token generation. Must be at least 32 bytes. Required.
 	Key []byte
 	// FieldName is the form field name for the CSRF token. Default: "csrf_token".
 	FieldName string
