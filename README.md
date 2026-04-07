@@ -443,6 +443,26 @@ dorman.BruteForceProtect(dorman.BruteForceConfig{
 })
 ```
 
+### Deployment considerations
+
+Both rate limiting and brute force protection store all state in process memory.
+Keep these constraints in mind when deploying:
+
+- **Single-process only** -- counters and block lists live in the Go process.
+  They are not visible to other instances behind a load balancer.
+- **Lost on restart** -- a rolling deploy or crash resets every counter to zero.
+- **No eviction** -- entries remain in memory until their window or cooldown
+  expires. Under high cardinality (many unique keys), memory will grow for the
+  duration of each window.
+- **Horizontal scaling** -- if your service runs as multiple replicas, each
+  replica enforces its own independent limits. A client can multiply its
+  effective quota by the number of instances.
+
+For single-process deployments the built-in `KeyFunc` (IP-based or custom) is
+sufficient. When you need shared state across instances or persistence across
+restarts, put a dedicated rate-limiting layer in front (e.g. a reverse proxy,
+API gateway, or external store) and use dorman as a local safety net.
+
 ## Middleware Chain
 
 Composing middleware with nested calls works for two or three layers but
