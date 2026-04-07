@@ -433,6 +433,63 @@ func TestRateLimit_DifferentKeys_IndependentLimits(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
 
+// --- IPKey edge-case tests ---
+
+func TestIPKey_RemoteAddr_NoPort(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "192.168.1.1" // no port — net.SplitHostPort fails
+	require.Equal(t, "192.168.1.1", IPKey(req))
+}
+
+func TestIPKey_RemoteAddr_Empty(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = ""
+	require.Equal(t, "", IPKey(req))
+}
+
+func TestIPKey_RemoteAddr_IPv6_WithPort(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[::1]:8080"
+	require.Equal(t, "::1", IPKey(req))
+}
+
+func TestIPKey_RemoteAddr_IPv6_NoPort(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "::1" // bare IPv6 — SplitHostPort fails
+	require.Equal(t, "::1", IPKey(req))
+}
+
+func TestIPKey_RemoteAddr_IPv6_Full(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[2001:db8::1]:443"
+	require.Equal(t, "2001:db8::1", IPKey(req))
+}
+
+func TestIPKey_XForwardedFor_Empty(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-For", "")
+	req.RemoteAddr = "10.0.0.1:1234"
+	// Empty header value — should fall through to RemoteAddr.
+	require.Equal(t, "10.0.0.1", IPKey(req))
+}
+
+func TestIPKey_XForwardedFor_Whitespace(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Forwarded-For", "  ,10.0.0.2")
+	req.RemoteAddr = "10.0.0.99:1234"
+	// First element after split is whitespace-only → trimmed to "".
+	// Since ip == "", the empty check triggers and falls through to
+	// X-Real-IP / RemoteAddr.
+	require.Equal(t, "10.0.0.99", IPKey(req))
+}
+
+func TestIPKey_XRealIP_Whitespace(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Real-IP", "  198.51.100.5  ")
+	req.RemoteAddr = "10.0.0.99:1234"
+	require.Equal(t, "198.51.100.5", IPKey(req))
+}
+
 // --- IPKey tests ---
 
 func TestIPKey_XForwardedFor(t *testing.T) {
@@ -738,5 +795,77 @@ func TestResetFailures_ClearsCounter(t *testing.T) {
 	req.RemoteAddr = "10.0.0.1:1234"
 	rec = httptest.NewRecorder()
 	handler2.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
+// TestBruteForceProtect_ImplicitOK_NoWriteHeader verifies that a handler which
+// writes a body without calling WriteHeader explicitly (Go implicitly sends 200)
+// does not count as a failure. The bruteForceWriter's WriteHeader is only called
+// when the handler (or Go's implicit flush) triggers it, so implicit 200 should
+// behave the same as an explicit 200.
+func TestBruteForceProtect_ImplicitOK_NoWriteHeader(t *testing.T) {
+	mw := BruteForceProtect(BruteForceConfig{
+		MaxAttempts: 1,
+		Cooldown:    time.Minute,
+	})
+	// Handler writes a body without calling WriteHeader — Go sends 200 implicitly.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})
+	handler := mw(inner)
+
+	// Multiple requests should all succeed because implicit 200 is not a failure.
+	for range 5 {
+		req := httptest.NewRequest(http.MethodPost, "/login", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		require.Equal(t, "ok", rec.Body.String())
+	}
+}
+
+// TestBruteForceProtect_ImplicitOK_ThenFailure verifies that implicit 200
+// responses don't interfere with subsequent real failures being tracked.
+func TestBruteForceProtect_ImplicitOK_ThenFailure(t *testing.T) {
+	callCount := 0
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount <= 2 {
+			// First two calls: write body without explicit WriteHeader (implicit 200).
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		// Subsequent calls: explicit 401.
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+
+	mw := BruteForceProtect(BruteForceConfig{
+		MaxAttempts: 1,
+		Cooldown:    time.Minute,
+	})
+	handler := mw(inner)
+
+	// Two implicit-200 requests should not count as failures.
+	for range 2 {
+		req := httptest.NewRequest(http.MethodPost, "/login", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+	}
+
+	// Third request returns 401 — counts as failure.
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code)
+
+	// Fourth request should be blocked.
+	req = httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
