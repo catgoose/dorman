@@ -168,7 +168,7 @@ auth := dorman.RequireAuth(provider, dorman.AuthErrorHandler(
 
 The `err` argument is one of the sentinel errors (`ErrUnauthorized` or
 `ErrForbidden`) so you can distinguish 401 vs 403 cases. Works with
-`RequireAuth`, `RequireRole`, and `RequireAnyRole`.
+`RequireAuth`, `RequireRole`, `RequireAnyRole`, and `RequireAllRoles`.
 
 ### ContextIdentityProvider
 
