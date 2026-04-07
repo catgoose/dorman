@@ -77,6 +77,10 @@ var safeMethods = map[string]bool{
 // CSRFProtect returns middleware that implements double-submit cookie CSRF
 // protection. The CSRF token is available to handlers via [GetToken].
 func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
+	if len(cfg.Key) < 32 {
+		panic("dorman: CSRFConfig.Key must be at least 32 bytes")
+	}
+
 	// Apply defaults.
 	if cfg.FieldName == "" {
 		cfg.FieldName = "csrf_token"
