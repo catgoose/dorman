@@ -207,13 +207,17 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 
 		origin = strings.ToLower(strings.TrimRight(origin, "/"))
 
-		// Always trust the request's own host.
+		// Always trust the request's own host with the correct scheme.
 		requestHost := strings.ToLower(r.Host)
-		// Build scheme+host from request for comparison.
-		for _, scheme := range []string{"https://", "http://"} {
-			if origin == scheme+requestHost {
-				return true
-			}
+		// Derive the effective scheme from TLS state or X-Forwarded-Proto.
+		scheme := "http://"
+		if r.TLS != nil {
+			scheme = "https://"
+		} else if proto := r.Header.Get("X-Forwarded-Proto"); strings.EqualFold(proto, "https") {
+			scheme = "https://"
+		}
+		if origin == scheme+requestHost {
+			return true
 		}
 		// Also accept bare host match (e.g. when origin header is just host).
 		if origin == requestHost {

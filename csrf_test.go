@@ -428,7 +428,7 @@ func TestOriginValidation_MatchingOriginSucceeds(t *testing.T) {
 
 	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
 		r.Host = "example.com"
-		r.Header.Set("Origin", "https://example.com")
+		r.Header.Set("Origin", "http://example.com")
 		r.AddCookie(nonceCookie)
 		r.Header.Set("X-CSRF-Token", token)
 	})
@@ -563,7 +563,7 @@ func TestOriginValidation_RefererFallback(t *testing.T) {
 	// Matching Referer (no Origin header) should pass.
 	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
 		r.Host = "example.com"
-		r.Header.Set("Referer", "https://example.com/page")
+		r.Header.Set("Referer", "http://example.com/page")
 		r.AddCookie(nonceCookie)
 		r.Header.Set("X-CSRF-Token", token)
 	})
@@ -572,7 +572,7 @@ func TestOriginValidation_RefererFallback(t *testing.T) {
 	// Mismatched Referer should fail.
 	postRec2 := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
 		r.Host = "example.com"
-		r.Header.Set("Referer", "https://evil.com/page")
+		r.Header.Set("Referer", "http://evil.com/page")
 		r.AddCookie(nonceCookie)
 		r.Header.Set("X-CSRF-Token", token)
 	})
@@ -687,7 +687,7 @@ func TestOriginValidation_RefererNoSlashAfterHost(t *testing.T) {
 	// Referer with scheme but no path slash — entire ref is used as the origin.
 	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
 		r.Host = "example.com"
-		r.Header.Set("Referer", "https://example.com") // no trailing slash or path
+		r.Header.Set("Referer", "http://example.com") // no trailing slash or path
 		r.AddCookie(nonceCookie)
 		r.Header.Set("X-CSRF-Token", token)
 	})
@@ -834,4 +834,147 @@ func TestSecFetch_SameOrigin_SetsCookieAndContext(t *testing.T) {
 	cookie := extractCookie(rec, "_csrf")
 	require.NotNil(t, cookie, "CSRF cookie should be set on same-origin fast path")
 	require.NotEmpty(t, cookie.Value)
+}
+
+// TestOriginValidation_HTTPSRequestRejectsHTTPOrigin verifies that an HTTPS
+// request rejects an http:// origin for the same host.
+func TestOriginValidation_HTTPSRequestRejectsHTTPOrigin(t *testing.T) {
+	var token string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token = GetToken(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	cfg := minimalCfg()
+	cfg.ValidateOrigin = true
+	handler := CSRFProtect(cfg)(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	// Simulate HTTPS request via X-Forwarded-Proto, but origin uses http://.
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.Host = "example.com"
+		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("Origin", "http://example.com")
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", token)
+	})
+	require.Equal(t, http.StatusForbidden, postRec.Code)
+}
+
+// TestOriginValidation_HTTPRequestRejectsHTTPSOrigin verifies that a plain
+// HTTP request rejects an https:// origin for the same host.
+func TestOriginValidation_HTTPRequestRejectsHTTPSOrigin(t *testing.T) {
+	var token string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token = GetToken(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	cfg := minimalCfg()
+	cfg.ValidateOrigin = true
+	handler := CSRFProtect(cfg)(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	// Plain HTTP request (no TLS, no X-Forwarded-Proto), but origin uses https://.
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.Host = "example.com"
+		r.Header.Set("Origin", "https://example.com")
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", token)
+	})
+	require.Equal(t, http.StatusForbidden, postRec.Code)
+}
+
+// TestOriginValidation_MatchingSchemeAndHostSucceeds verifies that when the
+// origin scheme matches the effective request scheme, the request passes.
+func TestOriginValidation_MatchingSchemeAndHostSucceeds(t *testing.T) {
+	var token string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token = GetToken(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	cfg := minimalCfg()
+	cfg.ValidateOrigin = true
+	handler := CSRFProtect(cfg)(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	// HTTPS request with matching https:// origin.
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.Host = "example.com"
+		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("Origin", "https://example.com")
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", token)
+	})
+	require.Equal(t, http.StatusOK, postRec.Code)
+
+	// HTTP request with matching http:// origin.
+	postRec2 := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.Host = "example.com"
+		r.Header.Set("Origin", "http://example.com")
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", token)
+	})
+	require.Equal(t, http.StatusOK, postRec2.Code)
+}
+
+// TestOriginValidation_TrustedOriginsOverridesScheme verifies that TrustedOrigins
+// still works as an explicit opt-in, even when the scheme doesn't match.
+func TestOriginValidation_TrustedOriginsOverridesScheme(t *testing.T) {
+	var token string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token = GetToken(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	cfg := minimalCfg()
+	cfg.ValidateOrigin = true
+	cfg.TrustedOrigins = []string{"http://example.com"}
+	handler := CSRFProtect(cfg)(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	// HTTPS request but origin is http:// — scheme mismatch for host check,
+	// but http://example.com is in TrustedOrigins so it should pass.
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.Host = "example.com"
+		r.Header.Set("X-Forwarded-Proto", "https")
+		r.Header.Set("Origin", "http://example.com")
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", token)
+	})
+	require.Equal(t, http.StatusOK, postRec.Code)
+}
+
+// TestOriginValidation_BareHostStillWorks verifies that an Origin header with
+// just the bare hostname (no scheme) is still accepted.
+func TestOriginValidation_BareHostStillWorks(t *testing.T) {
+	var token string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token = GetToken(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	cfg := minimalCfg()
+	cfg.ValidateOrigin = true
+	handler := CSRFProtect(cfg)(inner)
+
+	getRec := doRequest(t, handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	postRec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.Host = "example.com"
+		r.Header.Set("Origin", "example.com")
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", token)
+	})
+	require.Equal(t, http.StatusOK, postRec.Code)
 }
