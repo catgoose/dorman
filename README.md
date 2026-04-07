@@ -10,7 +10,7 @@
   - [Authorization](#authorization)
     - [IdentityProvider interface](#identityprovider-interface)
     - [RequireAuth](#requireauth)
-    - [RequireRole / RequireAnyRole / RequireAllRoles](#requirerole--requireanyrole--requireallroles)
+    - [RequireRole / RequireAnyRole / RequireAllRoles](#requirerole-requireanyrole-requireallroles)
     - [Custom error handling](#custom-error-handling)
     - [ContextIdentityProvider](#contextidentityprovider)
     - [Identity interface](#identity-interface)
@@ -295,7 +295,7 @@ Or customize:
 ```go
 handler := dorman.SecurityHeaders(dorman.SecurityHeadersConfig{
 	// HSTS is disabled by default -- opt in when serving over TLS:
-	HSTS:                  &dorman.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
+	HSTS: &dorman.HSTSConfig{MaxAge: 63072000, IncludeSubDomains: true},
 	// or use the helper: HSTS: dorman.DefaultHSTSConfig(),
 	ContentSecurityPolicy: "default-src 'self'",
 	PermissionsPolicy:     "camera=(), microphone=()",
@@ -337,10 +337,10 @@ error handling. Prevents oversized payloads from reaching your handlers:
 
 ```go
 limit := dorman.MaxRequestBody(dorman.MaxBodyConfig{
-    Default: 1 << 20, // 1 MB default
-    PerPath: map[string]int64{
-        "/upload": 10 << 20, // 10 MB for uploads
-    },
+	Default: 1 << 20, // 1 MB default
+	PerPath: map[string]int64{
+		"/upload": 10 << 20, // 10 MB for uploads
+	},
 })
 handler := limit(mux)
 ```
@@ -350,10 +350,10 @@ Too Large`. Provide an `ErrorHandler` to customize:
 
 ```go
 limit := dorman.MaxRequestBody(dorman.MaxBodyConfig{
-    Default: 1 << 20,
-    ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
-        http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
-    },
+	Default: 1 << 20,
+	ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+	},
 })
 ```
 
@@ -368,8 +368,8 @@ exemptions. No external dependencies -- pure stdlib.
 
 ```go
 limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
-    Requests: 100,
-    Window:   time.Minute,
+	Requests: 100,
+	Window:   time.Minute,
 })
 defer stop() // stop background cleanup goroutine on shutdown
 handler := limiter(mux)
@@ -381,12 +381,12 @@ Stricter limits for sensitive endpoints:
 
 ```go
 limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
-    Requests: 100,
-    Window:   time.Minute,
-    PerPath: map[string]dorman.RateRule{
-        "/login": {Requests: 5, Window: time.Minute},
-        "/api/expensive": {Requests: 10, Window: time.Minute},
-    },
+	Requests: 100,
+	Window:   time.Minute,
+	PerPath: map[string]dorman.RateRule{
+		"/login":         {Requests: 5, Window: time.Minute},
+		"/api/expensive": {Requests: 10, Window: time.Minute},
+	},
 })
 defer stop()
 ```
@@ -397,11 +397,11 @@ Rate limit by something other than IP:
 
 ```go
 limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
-    Requests: 100,
-    Window:   time.Minute,
-    KeyFunc: func(r *http.Request) string {
-        return r.Header.Get("X-API-Key")
-    },
+	Requests: 100,
+	Window:   time.Minute,
+	KeyFunc: func(r *http.Request) string {
+		return r.Header.Get("X-API-Key")
+	},
 })
 defer stop()
 ```
@@ -436,8 +436,8 @@ indicate a brute-force attack.
 
 ```go
 brute, stop := dorman.BruteForceProtect(dorman.BruteForceConfig{
-    MaxAttempts: 5,
-    Cooldown:    15 * time.Minute,
+	MaxAttempts: 5,
+	Cooldown:    15 * time.Minute,
 })
 defer stop() // stop background cleanup goroutine on shutdown
 handler := brute(mux)
@@ -455,12 +455,12 @@ locked out after a few typos:
 
 ```go
 mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
-    if authenticate(r) {
-        dorman.ResetFailures(r)
-        w.WriteHeader(http.StatusOK)
-        return
-    }
-    w.WriteHeader(http.StatusUnauthorized)
+	if authenticate(r) {
+		dorman.ResetFailures(r)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusUnauthorized)
 })
 ```
 
@@ -488,9 +488,9 @@ falls back to `r.RemoteAddr`:
 // Used automatically when KeyFunc is nil.
 // Or pass it explicitly:
 limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
-    Requests: 100,
-    Window:   time.Minute,
-    KeyFunc:  dorman.IPKey,
+	Requests: 100,
+	Window:   time.Minute,
+	KeyFunc:  dorman.IPKey,
 })
 ```
 
@@ -540,29 +540,29 @@ Dorman exports sentinel errors for programmatic error handling:
 
 **Authorization:**
 
-| Error              | Meaning                                                |
-| ------------------ | ------------------------------------------------------ |
-| `ErrUnauthorized`  | No identity found (401)                                |
-| `ErrForbidden`     | Identity lacks required role(s) (403)                  |
-| `ErrNoIdentity`    | `ContextIdentityProvider` found no value in context    |
-| `ErrInvalidIdentity` | Context value does not implement `Identity`          |
+| Error                | Meaning                                             |
+| -------------------- | --------------------------------------------------- |
+| `ErrUnauthorized`    | No identity found (401)                             |
+| `ErrForbidden`       | Identity lacks required role(s) (403)               |
+| `ErrNoIdentity`      | `ContextIdentityProvider` found no value in context |
+| `ErrInvalidIdentity` | Context value does not implement `Identity`         |
 
 **CSRF:**
 
-| Error                | Meaning                                              |
-| -------------------- | ---------------------------------------------------- |
-| `ErrCSRFTokenMissing` | No token in header or form field                    |
-| `ErrCSRFTokenInvalid` | Token does not match expected HMAC                  |
+| Error                 | Meaning                            |
+| --------------------- | ---------------------------------- |
+| `ErrCSRFTokenMissing` | No token in header or form field   |
+| `ErrCSRFTokenInvalid` | Token does not match expected HMAC |
 
 Use `errors.Is` to match:
 
 ```go
 csrf := dorman.CSRFProtect(dorman.CSRFConfig{
-    Key: secret,
-    ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
-        // The CSRF error is available via the request context's error
-        http.Error(w, "CSRF validation failed", http.StatusForbidden)
-    },
+	Key: secret,
+	ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
+		// The CSRF error is available via the request context's error
+		http.Error(w, "CSRF validation failed", http.StatusForbidden)
+	},
 })
 ```
 
@@ -577,11 +577,11 @@ Dorman panics at startup when required config fields are missing or invalid.
 This catches misconfigurations during initialization rather than silently
 misbehaving at runtime:
 
-| Constructor          | Panics when                                                         |
-| -------------------- | ------------------------------------------------------------------- |
-| `CSRFProtect`        | `Key` is less than 32 bytes                                         |
-| `RateLimit`          | `Requests` or `Window` is zero; same for any `PerPath` entry        |
-| `BruteForceProtect`  | `MaxAttempts` or `Cooldown` is zero                                 |
+| Constructor         | Panics when                                                  |
+| ------------------- | ------------------------------------------------------------ |
+| `CSRFProtect`       | `Key` is less than 32 bytes                                  |
+| `RateLimit`         | `Requests` or `Window` is zero; same for any `PerPath` entry |
+| `BruteForceProtect` | `MaxAttempts` or `Cooldown` is zero                          |
 
 This is intentional -- a misconfigured security middleware that silently passes
 all requests is worse than a loud crash at boot.
