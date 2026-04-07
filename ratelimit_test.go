@@ -959,14 +959,88 @@ func TestBruteForceStore_Evict_RemovesExpiredEntries(t *testing.T) {
 	// blocked entry whose cooldown has NOT expired.
 	store.entries["active"] = &bruteForceEntry{count: 3, blockedAt: nowFn()}
 
-	// entry below max (not blocked) should NOT be removed by evict.
-	store.entries["partial"] = &bruteForceEntry{count: 1}
+	// entry below max (not blocked) with recent activity should NOT be removed.
+	store.entries["partial"] = &bruteForceEntry{count: 1, lastSeen: nowFn()}
 
 	store.evict()
 
 	require.NotContains(t, store.entries, "expired")
 	require.Contains(t, store.entries, "active")
 	require.Contains(t, store.entries, "partial")
+}
+
+func TestBruteForceStore_Evict_RemovesStaleSubThresholdEntries(t *testing.T) {
+	nowFn, advance := fakeNow()
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  nowFn,
+		max:      5,
+		cooldown: time.Minute,
+		done:     make(chan struct{}),
+	}
+
+	// Sub-threshold entry last seen at the start.
+	store.entries["stale"] = &bruteForceEntry{count: 2, lastSeen: nowFn()}
+
+	// Advance past cooldown.
+	advance(2 * time.Minute)
+
+	store.evict()
+
+	require.NotContains(t, store.entries, "stale",
+		"sub-threshold entry idle past cooldown should be evicted")
+}
+
+func TestBruteForceStore_Evict_KeepsActiveSubThresholdEntries(t *testing.T) {
+	nowFn, advance := fakeNow()
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  nowFn,
+		max:      5,
+		cooldown: time.Minute,
+		done:     make(chan struct{}),
+	}
+
+	// Sub-threshold entry last seen 30 seconds ago (within cooldown).
+	advance(30 * time.Second)
+	store.entries["recent"] = &bruteForceEntry{count: 2, lastSeen: nowFn()}
+	advance(20 * time.Second) // total 50 seconds from start, 20 seconds since lastSeen
+
+	store.evict()
+
+	require.Contains(t, store.entries, "recent",
+		"sub-threshold entry still within cooldown should not be evicted")
+}
+
+func TestBruteForceStore_Evict_BlockedEntriesStillEvictCorrectly(t *testing.T) {
+	nowFn, advance := fakeNow()
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  nowFn,
+		max:      3,
+		cooldown: time.Minute,
+		done:     make(chan struct{}),
+	}
+
+	// Blocked entry whose cooldown has expired.
+	store.entries["blocked-expired"] = &bruteForceEntry{
+		count: 3, blockedAt: nowFn(), lastSeen: nowFn(),
+	}
+
+	// Blocked entry whose cooldown has NOT expired.
+	advance(30 * time.Second)
+	store.entries["blocked-active"] = &bruteForceEntry{
+		count: 3, blockedAt: nowFn(), lastSeen: nowFn(),
+	}
+
+	advance(45 * time.Second) // 75s from start; blocked-expired is 75s old, blocked-active is 45s old
+
+	store.evict()
+
+	require.NotContains(t, store.entries, "blocked-expired",
+		"blocked entry past cooldown should be evicted")
+	require.Contains(t, store.entries, "blocked-active",
+		"blocked entry within cooldown should not be evicted")
 }
 
 func TestBruteForceStore_Stop_TerminatesGoroutine(t *testing.T) {

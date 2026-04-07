@@ -257,6 +257,7 @@ type BruteForceConfig struct {
 type bruteForceEntry struct {
 	count     int
 	blockedAt time.Time
+	lastSeen  time.Time
 }
 
 // bruteForceStore holds the internal state for brute force protection.
@@ -289,7 +290,10 @@ func (s *bruteForceStore) startCleanup(interval time.Duration) {
 	}()
 }
 
-// evict removes brute force entries whose cooldown has expired.
+// evict removes brute force entries whose cooldown has expired. Blocked entries
+// are evicted once the cooldown elapses from blockedAt. Sub-threshold entries
+// that have been idle (no new failures) longer than the cooldown are also
+// evicted to prevent unbounded memory growth.
 func (s *bruteForceStore) evict() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -297,6 +301,10 @@ func (s *bruteForceStore) evict() {
 	for key, entry := range s.entries {
 		if entry.count >= s.max && !entry.blockedAt.IsZero() {
 			if now.Sub(entry.blockedAt) >= s.cooldown {
+				delete(s.entries, key)
+			}
+		} else if entry.count < s.max && !entry.lastSeen.IsZero() {
+			if now.Sub(entry.lastSeen) >= s.cooldown {
 				delete(s.entries, key)
 			}
 		}
@@ -342,9 +350,11 @@ func (bw *bruteForceWriter) WriteHeader(code int) {
 				entry = &bruteForceEntry{}
 				bw.store.entries[bw.key] = entry
 			}
+			now := bw.store.nowFunc()
 			entry.count++
+			entry.lastSeen = now
 			if entry.count >= bw.store.max {
-				entry.blockedAt = bw.store.nowFunc()
+				entry.blockedAt = now
 			}
 			bw.store.mu.Unlock()
 		}
