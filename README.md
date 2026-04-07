@@ -223,7 +223,7 @@ token := dorman.GetToken(r)
 
 1. Every request gets a cookie containing a random nonce
 2. The CSRF token is `HMAC-SHA256(key, nonce)`, stored on the request context
-3. Safe methods (GET, HEAD, OPTIONS) set the cookie and context but skip validation
+3. Safe methods (GET, HEAD, OPTIONS, TRACE) set the cookie and context but skip validation
 4. Unsafe methods with `Sec-Fetch-Site: same-origin` skip token validation entirely -- the browser guarantees the request originated from the same origin (94%+ browser coverage)
 5. All other unsafe methods validate: the submitted token must match the expected HMAC -- checked from the request header first, then the form field
 
@@ -244,6 +244,8 @@ dorman.CSRFProtect(dorman.CSRFConfig{
     ErrorHandler:     func(w http.ResponseWriter, r *http.Request) { ... },
     RotatePerRequest: false,              // stable token per cookie (default)
     PerRequestPaths:  []string{"/login"}, // rotate only for these paths
+    ValidateOrigin:   true,               // check Origin header on unsafe methods (default: false)
+    TrustedOrigins:   []string{"https://cdn.example.com"}, // extra allowed origins (request host is always trusted)
 })
 ```
 
