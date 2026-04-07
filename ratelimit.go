@@ -23,7 +23,9 @@ type RateLimitConfig struct {
 	// PerPath maps exact request paths to individual rate limit rules that
 	// override the default Requests/Window for those paths.
 	PerPath map[string]RateRule
-	// ExemptPaths lists exact request paths that bypass rate limiting entirely.
+	// ExemptPaths lists path prefixes that bypass rate limiting entirely. A
+	// request is exempt when its path starts with any of the listed prefixes.
+	// For example, "/public/" exempts "/public/js/htmx.min.js".
 	ExemptPaths []string
 	// ExemptFunc is a custom function that, when it returns true, bypasses rate
 	// limiting for the request.
@@ -128,10 +130,8 @@ func RateLimit(cfg RateLimitConfig) (mw func(http.Handler) http.Handler, stop fu
 		keyFunc = IPKey
 	}
 
-	exemptSet := make(map[string]bool, len(cfg.ExemptPaths))
-	for _, p := range cfg.ExemptPaths {
-		exemptSet[p] = true
-	}
+	exemptPrefixes := make([]string, len(cfg.ExemptPaths))
+	copy(exemptPrefixes, cfg.ExemptPaths)
 
 	store := &rateLimitStore{
 		windows: make(map[string]*window),
@@ -155,17 +155,19 @@ func RateLimit(cfg RateLimitConfig) (mw func(http.Handler) http.Handler, stop fu
 
 	store.startCleanup(cleanupInterval, maxWindow)
 
-	return buildRateLimitHandler(cfg, store, exemptSet, keyFunc), store.stop
+	return buildRateLimitHandler(cfg, store, exemptPrefixes, keyFunc), store.stop
 }
 
 // buildRateLimitHandler constructs the rate limiting handler using the given
 // store. This is separated from RateLimit so tests can inject a custom nowFunc.
-func buildRateLimitHandler(cfg RateLimitConfig, store *rateLimitStore, exemptSet map[string]bool, keyFunc func(*http.Request) string) func(http.Handler) http.Handler {
+func buildRateLimitHandler(cfg RateLimitConfig, store *rateLimitStore, exemptPrefixes []string, keyFunc func(*http.Request) string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if exemptSet[r.URL.Path] {
-				next.ServeHTTP(w, r)
-				return
+			for _, prefix := range exemptPrefixes {
+				if strings.HasPrefix(r.URL.Path, prefix) {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 			if cfg.ExemptFunc != nil && cfg.ExemptFunc(r) {
 				next.ServeHTTP(w, r)
