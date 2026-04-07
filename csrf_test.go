@@ -1080,3 +1080,125 @@ func TestOriginValidation_BareHostStillWorks(t *testing.T) {
 	})
 	require.Equal(t, http.StatusOK, postRec.Code)
 }
+
+// doFuzzRequest is like doRequest but does not require a *testing.T, making it
+// usable from fuzz seed setup code (which only has *testing.F).
+func doFuzzRequest(handler http.Handler, method, path string, setupFn func(*http.Request)) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	if setupFn != nil {
+		setupFn(req)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+// FuzzUnmaskToken_RoundTrip obtains a valid masked CSRF token, then fuzzes
+// mutations of the masked token string to verify unmaskToken never panics.
+// The middleware should either accept the token (200) or reject it (403),
+// but must never crash.
+func FuzzUnmaskToken_RoundTrip(f *testing.F) {
+	// Build a handler that captures the token on GET.
+	var capturedToken string
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if t := GetToken(r); t != "" {
+			capturedToken = t
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFProtect(minimalCfg())(inner)
+
+	// GET to obtain a valid token and nonce cookie.
+	getRec := doFuzzRequest(handler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	if nonceCookie == nil {
+		f.Fatal("failed to obtain CSRF cookie from GET")
+	}
+	validToken := capturedToken
+	if validToken == "" {
+		f.Fatal("failed to capture valid token from GET")
+	}
+
+	// Seed corpus.
+	f.Add(validToken)                          // valid masked token
+	f.Add("")                                  // empty string
+	f.Add("g")                                 // odd length, single char
+	f.Add("abc")                               // odd length
+	f.Add("zzzzzzzz")                          // invalid hex chars
+	f.Add(validToken[:len(validToken)/2])       // truncated: first half only
+	f.Add(strings.Repeat("a", 1024))           // oversized input
+	f.Add(strings.Repeat("00", 64))            // all zeros, valid hex, correct length
+	f.Add(strings.Repeat("ff", 64))            // all 0xff, valid hex, correct length
+	f.Add(strings.Repeat("00", 10))            // all zeros, wrong length
+	f.Add("abcdef01abcdef01abcdef01abcdef01")   // valid hex, half the expected length
+
+	f.Fuzz(func(t *testing.T, fuzzedToken string) {
+		// POST with the fuzzed token — must not panic.
+		rec := doFuzzRequest(handler, http.MethodPost, "/", func(r *http.Request) {
+			r.AddCookie(nonceCookie)
+			r.Header.Set("X-CSRF-Token", fuzzedToken)
+		})
+		code := rec.Code
+		if code != http.StatusOK && code != http.StatusForbidden {
+			t.Errorf("unexpected status code %d for fuzzed token %q", code, fuzzedToken)
+		}
+	})
+}
+
+// FuzzCSRFMiddleware_PostToken sets up the full CSRF middleware flow and fuzzes
+// the token submitted via POST header. This exercises unmaskToken, HMAC
+// comparison, and all validation branches through the public API.
+func FuzzCSRFMiddleware_PostToken(f *testing.F) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// Use a fixed key for deterministic HMAC computation.
+	cfg := CSRFConfig{Key: testKey}
+	handler := CSRFProtect(cfg)(inner)
+
+	// GET to obtain a nonce cookie and valid token.
+	var validToken string
+	tokenCapture := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if t := GetToken(r); t != "" {
+			validToken = t
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	tokenHandler := CSRFProtect(cfg)(tokenCapture)
+
+	getRec := doFuzzRequest(tokenHandler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	if nonceCookie == nil {
+		f.Fatal("failed to obtain CSRF cookie from GET")
+	}
+	if validToken == "" {
+		f.Fatal("failed to capture valid token from GET")
+	}
+
+	// Seed corpus with various interesting inputs.
+	f.Add(validToken)                           // valid token — should produce 200
+	f.Add("")                                   // empty — rejected before unmask
+	f.Add("x")                                  // odd length, single char
+	f.Add("abcde")                              // odd length
+	f.Add("ZZZZ0000ZZZZ0000")                  // invalid hex in pad half
+	f.Add("0000ZZZZ0000ZZZZ")                  // invalid hex in masked half
+	f.Add(validToken[:len(validToken)/2])        // first half only
+	f.Add(strings.Repeat("0", 256))             // all-zero, correct total length
+	f.Add(strings.Repeat("f", 256))             // all-f, correct total length
+	f.Add(strings.Repeat("a", 4096))            // very long input
+	f.Add(strings.Repeat("00", 32))             // correct hex format, wrong byte count
+	f.Add("ghijklmnopqrstuv")                   // non-hex alphabetic
+
+	f.Fuzz(func(t *testing.T, submittedToken string) {
+		// POST with the cookie and fuzzed token — must not panic.
+		rec := doFuzzRequest(handler, http.MethodPost, "/", func(r *http.Request) {
+			r.AddCookie(nonceCookie)
+			r.Header.Set("X-CSRF-Token", submittedToken)
+		})
+		code := rec.Code
+		if code != http.StatusOK && code != http.StatusForbidden {
+			t.Errorf("unexpected status code %d for submitted token %q", code, submittedToken)
+		}
+	})
+}
