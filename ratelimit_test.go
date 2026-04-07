@@ -178,7 +178,8 @@ func TestBruteForceProtect_PanicsOnZeroCooldown(t *testing.T) {
 // --- RateLimit tests ---
 
 func TestRateLimit_UnderLimit_Passes(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{Requests: 5, Window: time.Minute})
+	mw, stop := RateLimit(RateLimitConfig{Requests: 5, Window: time.Minute})
+	defer stop()
 	handler := mw(okHandler())
 
 	for range 5 {
@@ -191,7 +192,8 @@ func TestRateLimit_UnderLimit_Passes(t *testing.T) {
 }
 
 func TestRateLimit_AtLimit_Blocks(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{Requests: 2, Window: time.Minute})
+	mw, stop := RateLimit(RateLimitConfig{Requests: 2, Window: time.Minute})
+	defer stop()
 	handler := mw(okHandler())
 
 	for range 2 {
@@ -215,6 +217,7 @@ func TestRateLimit_RetryAfterHeader(t *testing.T) {
 	store := &rateLimitStore{
 		windows: make(map[string]*window),
 		nowFunc: nowFn,
+		done:    make(chan struct{}),
 	}
 
 	exemptSet := make(map[string]bool)
@@ -243,6 +246,7 @@ func TestRateLimit_WindowResets(t *testing.T) {
 	store := &rateLimitStore{
 		windows: make(map[string]*window),
 		nowFunc: nowFn,
+		done:    make(chan struct{}),
 	}
 
 	exemptSet := make(map[string]bool)
@@ -272,13 +276,14 @@ func TestRateLimit_WindowResets(t *testing.T) {
 }
 
 func TestRateLimit_PerPath_Override(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{
+	mw, stop := RateLimit(RateLimitConfig{
 		Requests: 10,
 		Window:   time.Minute,
 		PerPath: map[string]RateRule{
 			"/login": {Requests: 1, Window: time.Minute},
 		},
 	})
+	defer stop()
 	handler := mw(okHandler())
 
 	// First request to /login passes.
@@ -304,11 +309,12 @@ func TestRateLimit_PerPath_Override(t *testing.T) {
 }
 
 func TestRateLimit_ExemptPaths_Bypass(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{
+	mw, stop := RateLimit(RateLimitConfig{
 		Requests:    1,
 		Window:      time.Minute,
 		ExemptPaths: []string{"/health"},
 	})
+	defer stop()
 	handler := mw(okHandler())
 
 	// Exhaust limit on normal path.
@@ -329,13 +335,14 @@ func TestRateLimit_ExemptPaths_Bypass(t *testing.T) {
 }
 
 func TestRateLimit_ExemptFunc_Bypass(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{
+	mw, stop := RateLimit(RateLimitConfig{
 		Requests: 1,
 		Window:   time.Minute,
 		ExemptFunc: func(r *http.Request) bool {
 			return r.Header.Get("X-API-Key") == "secret"
 		},
 	})
+	defer stop()
 	handler := mw(okHandler())
 
 	// Exhaust limit.
@@ -363,7 +370,7 @@ func TestRateLimit_ExemptFunc_Bypass(t *testing.T) {
 
 func TestRateLimit_CustomErrorHandler(t *testing.T) {
 	var called bool
-	mw := RateLimit(RateLimitConfig{
+	mw, stop := RateLimit(RateLimitConfig{
 		Requests: 1,
 		Window:   time.Minute,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
@@ -372,6 +379,7 @@ func TestRateLimit_CustomErrorHandler(t *testing.T) {
 			_, _ = w.Write([]byte("custom: rate limited"))
 		},
 	})
+	defer stop()
 	handler := mw(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -391,7 +399,8 @@ func TestRateLimit_CustomErrorHandler(t *testing.T) {
 }
 
 func TestRateLimit_DefaultKeyFunc_UsesIP(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{Requests: 1, Window: time.Minute})
+	mw, stop := RateLimit(RateLimitConfig{Requests: 1, Window: time.Minute})
+	defer stop()
 	handler := mw(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -409,7 +418,8 @@ func TestRateLimit_DefaultKeyFunc_UsesIP(t *testing.T) {
 }
 
 func TestRateLimit_DifferentKeys_IndependentLimits(t *testing.T) {
-	mw := RateLimit(RateLimitConfig{Requests: 1, Window: time.Minute})
+	mw, stop := RateLimit(RateLimitConfig{Requests: 1, Window: time.Minute})
+	defer stop()
 	handler := mw(okHandler())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -515,10 +525,11 @@ func TestIPKey_RemoteAddr(t *testing.T) {
 // --- BruteForceProtect tests ---
 
 func TestBruteForceProtect_UnderThreshold_Passes(t *testing.T) {
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 3,
 		Cooldown:    time.Minute,
 	})
+	defer stop()
 	handler := mw(statusHandler(http.StatusUnauthorized))
 
 	// Two failures should not block.
@@ -539,10 +550,11 @@ func TestBruteForceProtect_UnderThreshold_Passes(t *testing.T) {
 }
 
 func TestBruteForceProtect_AtThreshold_Blocks(t *testing.T) {
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 2,
 		Cooldown:    time.Minute,
 	})
+	defer stop()
 	handler := mw(statusHandler(http.StatusUnauthorized))
 
 	// Trigger 2 failures.
@@ -574,6 +586,7 @@ func TestBruteForceProtect_CooldownExpires_Unblocks(t *testing.T) {
 		nowFunc:  nowFn,
 		max:      cfg.MaxAttempts,
 		cooldown: cfg.Cooldown,
+		done:     make(chan struct{}),
 	}
 
 	handler := buildBruteForceHandler(cfg, store, map[int]bool{http.StatusUnauthorized: true}, IPKey)(statusHandler(http.StatusUnauthorized))
@@ -602,10 +615,11 @@ func TestBruteForceProtect_CooldownExpires_Unblocks(t *testing.T) {
 }
 
 func TestBruteForceProtect_SuccessDoesNotCount(t *testing.T) {
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 2,
 		Cooldown:    time.Minute,
 	})
+	defer stop()
 	handler := mw(statusHandler(http.StatusOK))
 
 	// 200 responses should not count as failures.
@@ -619,11 +633,12 @@ func TestBruteForceProtect_SuccessDoesNotCount(t *testing.T) {
 }
 
 func TestBruteForceProtect_CustomFailureStatus(t *testing.T) {
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts:   1,
 		Cooldown:      time.Minute,
 		FailureStatus: []int{http.StatusForbidden},
 	})
+	defer stop()
 	handler := mw(statusHandler(http.StatusForbidden))
 
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
@@ -642,7 +657,7 @@ func TestBruteForceProtect_CustomFailureStatus(t *testing.T) {
 
 func TestBruteForceProtect_CustomErrorHandler(t *testing.T) {
 	var called bool
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 1,
 		Cooldown:    time.Minute,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
@@ -651,6 +666,7 @@ func TestBruteForceProtect_CustomErrorHandler(t *testing.T) {
 			_, _ = w.Write([]byte("custom: blocked"))
 		},
 	})
+	defer stop()
 	handler := mw(statusHandler(http.StatusUnauthorized))
 
 	req := httptest.NewRequest(http.MethodPost, "/login", nil)
@@ -681,6 +697,7 @@ func TestBruteForceProtect_RetryAfterHeader(t *testing.T) {
 		nowFunc:  nowFn,
 		max:      cfg.MaxAttempts,
 		cooldown: cfg.Cooldown,
+		done:     make(chan struct{}),
 	}
 
 	handler := buildBruteForceHandler(cfg, store, map[int]bool{http.StatusUnauthorized: true}, IPKey)(statusHandler(http.StatusUnauthorized))
@@ -703,10 +720,11 @@ func TestBruteForceProtect_RetryAfterHeader(t *testing.T) {
 }
 
 func TestResetFailures_ClearsCounter(t *testing.T) {
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 2,
 		Cooldown:    time.Minute,
 	})
+	defer stop()
 
 	// Handler that returns 401, but on the third call, returns 200 and resets.
 	callCount := 0
@@ -742,10 +760,11 @@ func TestResetFailures_ClearsCounter(t *testing.T) {
 	callCount = 0
 
 	// Use a fresh middleware instance.
-	mw2 := BruteForceProtect(BruteForceConfig{
+	mw2, stop2 := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 3,
 		Cooldown:    time.Minute,
 	})
+	defer stop2()
 	callCount2 := 0
 	inner2 := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount2++
@@ -804,10 +823,11 @@ func TestResetFailures_ClearsCounter(t *testing.T) {
 // when the handler (or Go's implicit flush) triggers it, so implicit 200 should
 // behave the same as an explicit 200.
 func TestBruteForceProtect_ImplicitOK_NoWriteHeader(t *testing.T) {
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 1,
 		Cooldown:    time.Minute,
 	})
+	defer stop()
 	// Handler writes a body without calling WriteHeader — Go sends 200 implicitly.
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -840,10 +860,11 @@ func TestBruteForceProtect_ImplicitOK_ThenFailure(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
 
-	mw := BruteForceProtect(BruteForceConfig{
+	mw, stop := BruteForceProtect(BruteForceConfig{
 		MaxAttempts: 1,
 		Cooldown:    time.Minute,
 	})
+	defer stop()
 	handler := mw(inner)
 
 	// Two implicit-200 requests should not count as failures.
@@ -868,4 +889,142 @@ func TestBruteForceProtect_ImplicitOK_ThenFailure(t *testing.T) {
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
+}
+
+// --- Eviction tests ---
+
+func TestRateLimitStore_Evict_RemovesExpiredWindows(t *testing.T) {
+	nowFn, advance := fakeNow()
+	store := &rateLimitStore{
+		windows: make(map[string]*window),
+		nowFunc: nowFn,
+		done:    make(chan struct{}),
+	}
+
+	// Seed two windows: one just started, one already old.
+	store.windows["fresh"] = &window{count: 1, start: nowFn()}
+	advance(2 * time.Minute)
+	store.windows["recent"] = &window{count: 1, start: nowFn()}
+
+	// Evict with a 1-minute window. "fresh" started 2 minutes ago, so it
+	// should be removed. "recent" started at the current fake time, so it
+	// should remain.
+	store.evict(time.Minute)
+
+	require.NotContains(t, store.windows, "fresh")
+	require.Contains(t, store.windows, "recent")
+}
+
+func TestRateLimitStore_Stop_TerminatesGoroutine(t *testing.T) {
+	store := &rateLimitStore{
+		windows: make(map[string]*window),
+		nowFunc: time.Now,
+		done:    make(chan struct{}),
+	}
+
+	store.startCleanup(50*time.Millisecond, time.Nanosecond)
+
+	// Add an entry that is already expired.
+	store.mu.Lock()
+	store.windows["old"] = &window{count: 1, start: time.Now().Add(-time.Hour)}
+	store.mu.Unlock()
+
+	// Give the goroutine time to run at least one tick.
+	time.Sleep(150 * time.Millisecond)
+
+	store.mu.Lock()
+	_, exists := store.windows["old"]
+	store.mu.Unlock()
+	require.False(t, exists, "expired entry should have been evicted")
+
+	// Stop should not panic even when called twice.
+	store.stop()
+	store.stop()
+}
+
+func TestBruteForceStore_Evict_RemovesExpiredEntries(t *testing.T) {
+	nowFn, advance := fakeNow()
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  nowFn,
+		max:      3,
+		cooldown: time.Minute,
+		done:     make(chan struct{}),
+	}
+
+	// blocked entry whose cooldown has expired.
+	store.entries["expired"] = &bruteForceEntry{count: 3, blockedAt: nowFn()}
+	advance(2 * time.Minute)
+
+	// blocked entry whose cooldown has NOT expired.
+	store.entries["active"] = &bruteForceEntry{count: 3, blockedAt: nowFn()}
+
+	// entry below max (not blocked) should NOT be removed by evict.
+	store.entries["partial"] = &bruteForceEntry{count: 1}
+
+	store.evict()
+
+	require.NotContains(t, store.entries, "expired")
+	require.Contains(t, store.entries, "active")
+	require.Contains(t, store.entries, "partial")
+}
+
+func TestBruteForceStore_Stop_TerminatesGoroutine(t *testing.T) {
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  time.Now,
+		max:      1,
+		cooldown: time.Nanosecond,
+		done:     make(chan struct{}),
+	}
+
+	store.startCleanup(50 * time.Millisecond)
+
+	// Add an entry that is already expired.
+	store.mu.Lock()
+	store.entries["old"] = &bruteForceEntry{count: 1, blockedAt: time.Now().Add(-time.Hour)}
+	store.mu.Unlock()
+
+	// Give the goroutine time to run at least one tick.
+	time.Sleep(150 * time.Millisecond)
+
+	store.mu.Lock()
+	_, exists := store.entries["old"]
+	store.mu.Unlock()
+	require.False(t, exists, "expired entry should have been evicted")
+
+	store.stop()
+	store.stop() // safe to call twice
+}
+
+func TestRateLimit_CleanupInterval_Config(t *testing.T) {
+	mw, stop := RateLimit(RateLimitConfig{
+		Requests:        1,
+		Window:          time.Minute,
+		CleanupInterval: 30 * time.Second,
+	})
+	defer stop()
+
+	handler := mw(okHandler())
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+}
+
+func TestBruteForce_CleanupInterval_Config(t *testing.T) {
+	mw, stop := BruteForceProtect(BruteForceConfig{
+		MaxAttempts:     3,
+		Cooldown:        time.Minute,
+		CleanupInterval: 30 * time.Second,
+	})
+	defer stop()
+
+	handler := mw(statusHandler(http.StatusOK))
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "10.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
 }

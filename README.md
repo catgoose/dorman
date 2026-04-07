@@ -353,10 +353,11 @@ Fixed-window rate limiting with per-path overrides, custom key functions, and
 exemptions. No external dependencies -- pure stdlib.
 
 ```go
-limiter := dorman.RateLimit(dorman.RateLimitConfig{
+limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
     Requests: 100,
     Window:   time.Minute,
 })
+defer stop() // stop background cleanup goroutine on shutdown
 handler := limiter(mux)
 ```
 
@@ -365,7 +366,7 @@ handler := limiter(mux)
 Stricter limits for sensitive endpoints:
 
 ```go
-limiter := dorman.RateLimit(dorman.RateLimitConfig{
+limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
     Requests: 100,
     Window:   time.Minute,
     PerPath: map[string]dorman.RateRule{
@@ -373,6 +374,7 @@ limiter := dorman.RateLimit(dorman.RateLimitConfig{
         "/api/expensive": {Requests: 10, Window: time.Minute},
     },
 })
+defer stop()
 ```
 
 ### Custom key function
@@ -380,27 +382,30 @@ limiter := dorman.RateLimit(dorman.RateLimitConfig{
 Rate limit by something other than IP:
 
 ```go
-limiter := dorman.RateLimit(dorman.RateLimitConfig{
+limiter, stop := dorman.RateLimit(dorman.RateLimitConfig{
     Requests: 100,
     Window:   time.Minute,
     KeyFunc: func(r *http.Request) string {
         return r.Header.Get("X-API-Key")
     },
 })
+defer stop()
 ```
 
 ### Rate limit configuration
 
 ```go
-dorman.RateLimit(dorman.RateLimitConfig{
-    Requests:    100,                   // max requests per window (required)
-    Window:      time.Minute,           // window duration (required)
-    KeyFunc:     dorman.IPKey,          // key extractor (default: IPKey)
-    PerPath:     map[string]dorman.RateRule{"/login": {Requests: 5, Window: time.Minute}},
-    ExemptPaths: []string{"/health"},
-    ExemptFunc:  func(r *http.Request) bool { return r.Header.Get("X-API-Key") != "" },
-    ErrorHandler: func(w http.ResponseWriter, r *http.Request) { ... },
+mw, stop := dorman.RateLimit(dorman.RateLimitConfig{
+    Requests:        100,                   // max requests per window (required)
+    Window:          time.Minute,           // window duration (required)
+    KeyFunc:         dorman.IPKey,          // key extractor (default: IPKey)
+    PerPath:         map[string]dorman.RateRule{"/login": {Requests: 5, Window: time.Minute}},
+    ExemptPaths:     []string{"/health"},
+    ExemptFunc:      func(r *http.Request) bool { return r.Header.Get("X-API-Key") != "" },
+    ErrorHandler:    func(w http.ResponseWriter, r *http.Request) { ... },
+    CleanupInterval: 2 * time.Minute,       // eviction frequency (default: Window)
 })
+defer stop() // stop background cleanup goroutine
 ```
 
 ## Brute Force Protection
@@ -410,10 +415,11 @@ Designed for login and authentication endpoints where repeated 401 responses
 indicate a brute-force attack.
 
 ```go
-brute := dorman.BruteForceProtect(dorman.BruteForceConfig{
+brute, stop := dorman.BruteForceProtect(dorman.BruteForceConfig{
     MaxAttempts: 5,
     Cooldown:    15 * time.Minute,
 })
+defer stop() // stop background cleanup goroutine on shutdown
 handler := brute(mux)
 ```
 
@@ -436,13 +442,15 @@ mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
 ### Brute force configuration
 
 ```go
-dorman.BruteForceProtect(dorman.BruteForceConfig{
-    MaxAttempts:   5,                    // failures before blocking (required)
-    Cooldown:      15 * time.Minute,     // block duration (required)
-    KeyFunc:       dorman.IPKey,         // key extractor (default: IPKey)
-    FailureStatus: []int{401},           // status codes that count as failures (default: [401])
-    ErrorHandler:  func(w http.ResponseWriter, r *http.Request) { ... },
+mw, stop := dorman.BruteForceProtect(dorman.BruteForceConfig{
+    MaxAttempts:     5,                    // failures before blocking (required)
+    Cooldown:        15 * time.Minute,     // block duration (required)
+    KeyFunc:         dorman.IPKey,         // key extractor (default: IPKey)
+    FailureStatus:   []int{401},           // status codes that count as failures (default: [401])
+    ErrorHandler:    func(w http.ResponseWriter, r *http.Request) { ... },
+    CleanupInterval: 30 * time.Minute,     // eviction frequency (default: Cooldown)
 })
+defer stop() // stop background cleanup goroutine
 ```
 
 ### Deployment considerations
