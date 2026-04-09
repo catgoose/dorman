@@ -410,6 +410,16 @@ func (bw *bruteForceWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, fmt.Errorf("dorman: underlying ResponseWriter does not implement http.Hijacker")
 }
 
+// Push delegates to the underlying ResponseWriter if it implements [http.Pusher].
+// When the underlying writer does not support HTTP/2 server push, it returns
+// [http.ErrNotSupported] to match the standard library pattern.
+func (bw *bruteForceWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := bw.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
 // BruteForceProtect returns middleware that tracks failed response status codes
 // and blocks a key after it exceeds MaxAttempts failures. The downstream
 // handler's response status is inspected via a wrapped ResponseWriter. Once

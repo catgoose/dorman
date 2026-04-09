@@ -45,6 +45,23 @@ func TestBruteForceWriter_Hijack_ErrorWhenNotSupported(t *testing.T) {
 	require.Contains(t, err.Error(), "http.Hijacker")
 }
 
+func TestBruteForceWriter_Push_Delegates(t *testing.T) {
+	inner := &pusherRecorder{ResponseWriter: httptest.NewRecorder()}
+	w := &bruteForceWriter{ResponseWriter: inner}
+	opts := &http.PushOptions{Method: http.MethodGet}
+	err := w.Push("/assets/app.js", opts)
+	require.NoError(t, err)
+	require.Equal(t, "/assets/app.js", inner.pushTarget)
+	require.Same(t, opts, inner.pushOpts)
+}
+
+func TestBruteForceWriter_Push_ErrorWhenNotSupported(t *testing.T) {
+	inner := newPlainResponseWriter()
+	w := &bruteForceWriter{ResponseWriter: inner}
+	err := w.Push("/x", nil)
+	require.ErrorIs(t, err, http.ErrNotSupported)
+}
+
 func TestBruteForceWriter_InterfacePreservation_ThroughMiddleware(t *testing.T) {
 	inner := &flusherHijackerRecorder{ResponseWriter: httptest.NewRecorder()}
 
