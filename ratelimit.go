@@ -334,34 +334,59 @@ type bruteForceCtxValue struct {
 }
 
 // bruteForceWriter intercepts WriteHeader to detect failure status codes and
-// increment the failure counter.
+// increment the failure counter. Failures are only counted against the first
+// committed status: if a handler writes body bytes before calling WriteHeader,
+// the effective status is 200 OK (per net/http), so a late WriteHeader(401)
+// must not count.
 type bruteForceWriter struct {
 	http.ResponseWriter
-	store        *bruteForceStore
-	key          string
-	failureSet   map[int]bool
-	once         sync.Once
+	store      *bruteForceStore
+	key        string
+	failureSet map[int]bool
+	once       sync.Once
+	committed  bool
+}
+
+// recordFailure increments the counter for the wrapped key. It is only called
+// when the committed status matches the failure set.
+func (bw *bruteForceWriter) recordFailure() {
+	bw.store.mu.Lock()
+	entry, ok := bw.store.entries[bw.key]
+	if !ok {
+		entry = &bruteForceEntry{}
+		bw.store.entries[bw.key] = entry
+	}
+	now := bw.store.nowFunc()
+	entry.count++
+	entry.lastSeen = now
+	if entry.count >= bw.store.max {
+		entry.blockedAt = now
+	}
+	bw.store.mu.Unlock()
 }
 
 func (bw *bruteForceWriter) WriteHeader(code int) {
 	bw.once.Do(func() {
+		// This is the first status to be committed. Record it and, if it is
+		// a failure status, count it.
+		bw.committed = true
 		if bw.failureSet[code] {
-			bw.store.mu.Lock()
-			entry, ok := bw.store.entries[bw.key]
-			if !ok {
-				entry = &bruteForceEntry{}
-				bw.store.entries[bw.key] = entry
-			}
-			now := bw.store.nowFunc()
-			entry.count++
-			entry.lastSeen = now
-			if entry.count >= bw.store.max {
-				entry.blockedAt = now
-			}
-			bw.store.mu.Unlock()
+			bw.recordFailure()
 		}
 	})
 	bw.ResponseWriter.WriteHeader(code)
+}
+
+// Write commits an implicit 200 OK when no explicit status has been written.
+// Subsequent WriteHeader calls are still forwarded to the underlying writer
+// (net/http ignores them) but will not change brute-force accounting.
+func (bw *bruteForceWriter) Write(b []byte) (int, error) {
+	bw.once.Do(func() {
+		// First write with no explicit status: commit effective status 200.
+		// 200 is not a failure, so no counter update is needed.
+		bw.committed = true
+	})
+	return bw.ResponseWriter.Write(b)
 }
 
 // Unwrap returns the underlying ResponseWriter so that [http.NewResponseController]

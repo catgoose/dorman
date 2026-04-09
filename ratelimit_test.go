@@ -922,6 +922,90 @@ func TestBruteForceProtect_ImplicitOK_ThenFailure(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, rec.Code)
 }
 
+// TestBruteForceWriter_ImplicitOKThenLateFailure_NoCount verifies that a
+// handler which writes a body first (committing an implicit 200 OK) and then
+// calls WriteHeader(401) does NOT increment the failure counter. net/http
+// ignores the late status mutation, so brute-force accounting must match the
+// status the client actually received.
+func TestBruteForceWriter_ImplicitOKThenLateFailure_NoCount(t *testing.T) {
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  time.Now,
+		max:      1,
+		cooldown: time.Minute,
+	}
+	w := &bruteForceWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		store:          store,
+		key:            "implicit-then-late",
+		failureSet:     map[int]bool{http.StatusUnauthorized: true},
+	}
+
+	// Body write first: commits effective status 200 OK.
+	_, err := w.Write([]byte("ok"))
+	require.NoError(t, err)
+
+	// Late WriteHeader(401) must not count the request as a failure.
+	w.WriteHeader(http.StatusUnauthorized)
+
+	store.mu.Lock()
+	entry := store.entries["implicit-then-late"]
+	store.mu.Unlock()
+	require.Nil(t, entry, "late WriteHeader(401) after a body write must not create a failure entry")
+}
+
+// TestBruteForceWriter_ExplicitFailureBeforeBody_Counts verifies that an
+// explicit WriteHeader(401) before any body bytes still counts as a failure.
+func TestBruteForceWriter_ExplicitFailureBeforeBody_Counts(t *testing.T) {
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  time.Now,
+		max:      2,
+		cooldown: time.Minute,
+	}
+	w := &bruteForceWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		store:          store,
+		key:            "explicit-failure",
+		failureSet:     map[int]bool{http.StatusUnauthorized: true},
+	}
+
+	w.WriteHeader(http.StatusUnauthorized)
+	_, err := w.Write([]byte("unauthorized"))
+	require.NoError(t, err)
+
+	store.mu.Lock()
+	entry := store.entries["explicit-failure"]
+	store.mu.Unlock()
+	require.NotNil(t, entry)
+	require.Equal(t, 1, entry.count, "explicit WriteHeader(401) before any body must count exactly once")
+}
+
+// TestBruteForceWriter_ImplicitOK_NoCount verifies that a plain body-only
+// handler (no explicit WriteHeader) is not counted as a failure at all.
+func TestBruteForceWriter_ImplicitOK_NoCount(t *testing.T) {
+	store := &bruteForceStore{
+		entries:  make(map[string]*bruteForceEntry),
+		nowFunc:  time.Now,
+		max:      1,
+		cooldown: time.Minute,
+	}
+	w := &bruteForceWriter{
+		ResponseWriter: httptest.NewRecorder(),
+		store:          store,
+		key:            "plain-implicit",
+		failureSet:     map[int]bool{http.StatusUnauthorized: true},
+	}
+
+	_, err := w.Write([]byte("ok"))
+	require.NoError(t, err)
+
+	store.mu.Lock()
+	entry := store.entries["plain-implicit"]
+	store.mu.Unlock()
+	require.Nil(t, entry, "a plain implicit 200 response must not be counted as a failure")
+}
+
 // --- Eviction tests ---
 
 func TestRateLimitStore_Evict_RemovesExpiredWindows(t *testing.T) {
