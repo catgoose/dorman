@@ -277,43 +277,6 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 					}
 				}
 			} else {
-				// Sec-Fetch-Site fast path: modern browsers that send
-				// "same-origin" guarantee the request came from this origin,
-				// so we can skip the token dance entirely.  We still set the
-				// cookie and context masker so forms/GetToken keep working.
-				if r.Header.Get("Sec-Fetch-Site") == "same-origin" {
-					// Reuse existing cookie nonce or generate a fresh one.
-					if c, err := r.Cookie(cfg.CookieName); err == nil && c.Value != "" {
-						nonce = c.Value
-					} else {
-						n, err := generateNonce()
-						if err != nil {
-							http.Error(w, "", http.StatusInternalServerError)
-							return
-						}
-						nonce = n
-					}
-
-					http.SetCookie(w, &http.Cookie{
-						Name:     cfg.CookieName,
-						Value:    nonce,
-						Path:     cfg.CookiePath,
-						MaxAge:   cfg.MaxAge,
-						Secure:   !cfg.InsecureCookie,
-						HttpOnly: true,
-						SameSite: cfg.SameSite,
-					})
-
-					tokenBytes := computeHMAC(nonce)
-					r = r.WithContext(context.WithValue(r.Context(), csrfTokenCtxKey, &csrfMasker{
-						tokenBytes: tokenBytes,
-						mask:       maskToken,
-					}))
-
-					next.ServeHTTP(w, r)
-					return
-				}
-
 				// Unsafe method: validate Origin header if configured.
 				if cfg.ValidateOrigin && !checkOrigin(r) {
 					fail(w, r)

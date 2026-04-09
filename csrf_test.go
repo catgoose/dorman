@@ -858,9 +858,11 @@ func TestPOST_WithValidToken_AfterRotatePerRequest(t *testing.T) {
 	require.Equal(t, http.StatusOK, postRec.Code)
 }
 
-// TestSecFetch_SameOrigin_SkipsTokenValidation verifies that a POST with
-// Sec-Fetch-Site: same-origin succeeds without a CSRF token.
-func TestSecFetch_SameOrigin_SkipsTokenValidation(t *testing.T) {
+// TestSecFetch_SameOrigin_StillRequiresToken verifies that a forged
+// Sec-Fetch-Site: same-origin header on an unsafe request without a token is
+// rejected. Request headers are attacker-controlled at the application
+// boundary, so fetch metadata cannot be trusted as an authorization primitive.
+func TestSecFetch_SameOrigin_StillRequiresToken(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -869,7 +871,7 @@ func TestSecFetch_SameOrigin_SkipsTokenValidation(t *testing.T) {
 	rec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
 		r.Header.Set("Sec-Fetch-Site", "same-origin")
 	})
-	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, http.StatusForbidden, rec.Code)
 }
 
 // TestSecFetch_CrossSite_StillRequiresToken verifies that Sec-Fetch-Site:
@@ -924,28 +926,6 @@ func TestSecFetch_Absent_StillRequiresToken(t *testing.T) {
 
 	rec := doRequest(t, handler, http.MethodPost, "/", nil)
 	require.Equal(t, http.StatusForbidden, rec.Code)
-}
-
-// TestSecFetch_SameOrigin_SetsCookieAndContext verifies that the fast path
-// still sets the CSRF cookie and makes GetToken() work.
-func TestSecFetch_SameOrigin_SetsCookieAndContext(t *testing.T) {
-	var contextToken string
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		contextToken = GetToken(r)
-		w.WriteHeader(http.StatusOK)
-	})
-	handler := CSRFProtect(minimalCfg())(inner)
-
-	rec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
-		r.Header.Set("Sec-Fetch-Site", "same-origin")
-	})
-
-	require.Equal(t, http.StatusOK, rec.Code)
-	require.NotEmpty(t, contextToken, "GetToken should return a token on same-origin fast path")
-
-	cookie := extractCookie(rec, "_csrf")
-	require.NotNil(t, cookie, "CSRF cookie should be set on same-origin fast path")
-	require.NotEmpty(t, cookie.Value)
 }
 
 // TestOriginValidation_HTTPSRequestRejectsHTTPOrigin verifies that an HTTPS
