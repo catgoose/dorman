@@ -23,6 +23,21 @@ func (f *flusherHijackerRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) 
 	return nil, nil, nil
 }
 
+// pusherRecorder is an httptest.ResponseRecorder-like type that also
+// implements http.Pusher for testing Push delegation.
+type pusherRecorder struct {
+	http.ResponseWriter
+	pushTarget string
+	pushOpts   *http.PushOptions
+	pushErr    error
+}
+
+func (p *pusherRecorder) Push(target string, opts *http.PushOptions) error {
+	p.pushTarget = target
+	p.pushOpts = opts
+	return p.pushErr
+}
+
 // plainResponseWriter is a minimal ResponseWriter that does NOT implement
 // http.Flusher or http.Hijacker. Used to test that delegation gracefully
 // handles missing optional interfaces.

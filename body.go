@@ -72,6 +72,16 @@ func (m *maxBodyWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return nil, nil, fmt.Errorf("dorman: underlying ResponseWriter does not implement http.Hijacker")
 }
 
+// Push delegates to the underlying ResponseWriter if it implements [http.Pusher].
+// When the underlying writer does not support HTTP/2 server push, it returns
+// [http.ErrNotSupported] to match the standard library pattern.
+func (m *maxBodyWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := m.ResponseWriter.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
+}
+
 // MaxRequestBody returns middleware that limits request body size using
 // [http.MaxBytesReader]. Each request's body is wrapped so that reading
 // beyond the allowed number of bytes returns an error and closes the reader.
