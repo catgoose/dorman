@@ -1,6 +1,7 @@
 package dorman
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -283,6 +284,129 @@ func TestCustomErrorHandler_CalledOnFailure(t *testing.T) {
 	rec := doRequest(t, handler, http.MethodPost, "/", nil)
 	require.True(t, errorHandlerCalled)
 	require.Equal(t, http.StatusTeapot, rec.Code)
+}
+
+// TestCSRFError_NilOutsideErrorHandler verifies that CSRFError returns nil when
+// no cause has been recorded on the request context.
+func TestCSRFError_NilOutsideErrorHandler(t *testing.T) {
+	var captured error
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = CSRFError(r)
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := CSRFProtect(minimalCfg())(inner)
+
+	rec := doRequest(t, handler, http.MethodGet, "/", nil)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, captured)
+}
+
+// TestCSRFError_MissingToken_ReportsSentinel verifies that a POST with no
+// submitted token reports ErrCSRFTokenMissing through CSRFError.
+func TestCSRFError_MissingToken_ReportsSentinel(t *testing.T) {
+	// First acquire a cookie via GET so we have an existing nonce.
+	getHandler := CSRFProtect(minimalCfg())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	getRec := doRequest(t, getHandler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	var captured error
+	cfg := minimalCfg()
+	cfg.ErrorHandler = func(w http.ResponseWriter, r *http.Request) {
+		captured = CSRFError(r)
+		http.Error(w, "", http.StatusForbidden)
+	}
+	handler := CSRFProtect(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// POST with cookie but no token.
+	rec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.AddCookie(nonceCookie)
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.Error(t, captured)
+	require.True(t, errors.Is(captured, ErrCSRFTokenMissing), "expected ErrCSRFTokenMissing, got %v", captured)
+}
+
+// TestCSRFError_MissingCookie_ReportsMissing verifies that a POST without the
+// CSRF cookie reports ErrCSRFTokenMissing.
+func TestCSRFError_MissingCookie_ReportsMissing(t *testing.T) {
+	var captured error
+	cfg := minimalCfg()
+	cfg.ErrorHandler = func(w http.ResponseWriter, r *http.Request) {
+		captured = CSRFError(r)
+		http.Error(w, "", http.StatusForbidden)
+	}
+	handler := CSRFProtect(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	rec := doRequest(t, handler, http.MethodPost, "/", nil)
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.True(t, errors.Is(captured, ErrCSRFTokenMissing), "expected ErrCSRFTokenMissing, got %v", captured)
+}
+
+// TestCSRFError_MalformedToken_ReportsInvalid verifies that a malformed
+// submitted token reports ErrCSRFTokenInvalid.
+func TestCSRFError_MalformedToken_ReportsInvalid(t *testing.T) {
+	getHandler := CSRFProtect(minimalCfg())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	getRec := doRequest(t, getHandler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	var captured error
+	cfg := minimalCfg()
+	cfg.ErrorHandler = func(w http.ResponseWriter, r *http.Request) {
+		captured = CSRFError(r)
+		http.Error(w, "", http.StatusForbidden)
+	}
+	handler := CSRFProtect(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Malformed token (odd length, not hex) — unmaskToken returns nil.
+	rec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", "not-hex-odd")
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.True(t, errors.Is(captured, ErrCSRFTokenInvalid), "expected ErrCSRFTokenInvalid, got %v", captured)
+}
+
+// TestCSRFError_MismatchedToken_ReportsInvalid verifies that a well-formed but
+// mismatched token reports ErrCSRFTokenInvalid.
+func TestCSRFError_MismatchedToken_ReportsInvalid(t *testing.T) {
+	getHandler := CSRFProtect(minimalCfg())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	getRec := doRequest(t, getHandler, http.MethodGet, "/", nil)
+	nonceCookie := extractCookie(getRec, "_csrf")
+	require.NotNil(t, nonceCookie)
+
+	var captured error
+	cfg := minimalCfg()
+	cfg.ErrorHandler = func(w http.ResponseWriter, r *http.Request) {
+		captured = CSRFError(r)
+		http.Error(w, "", http.StatusForbidden)
+	}
+	handler := CSRFProtect(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// Well-formed masked token (128 hex chars = 64 bytes pad+masked) that
+	// decodes successfully but does not match the cookie's HMAC.
+	bogus := strings.Repeat("ab", 64)
+	rec := doRequest(t, handler, http.MethodPost, "/", func(r *http.Request) {
+		r.AddCookie(nonceCookie)
+		r.Header.Set("X-CSRF-Token", bogus)
+	})
+	require.Equal(t, http.StatusForbidden, rec.Code)
+	require.True(t, errors.Is(captured, ErrCSRFTokenInvalid), "expected ErrCSRFTokenInvalid, got %v", captured)
 }
 
 // TestSafeMethods_HeadAndOptions verifies that HEAD and OPTIONS do not reject.

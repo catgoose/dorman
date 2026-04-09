@@ -553,14 +553,21 @@ Dorman exports sentinel errors for programmatic error handling:
 | `ErrCSRFTokenMissing` | No token in header or form field   |
 | `ErrCSRFTokenInvalid` | Token does not match expected HMAC |
 
-Use `errors.Is` to match:
+Use `dorman.CSRFError(r)` from inside a custom `ErrorHandler` and match with
+`errors.Is`:
 
 ```go
 csrf := dorman.CSRFProtect(dorman.CSRFConfig{
 	Key: secret,
 	ErrorHandler: func(w http.ResponseWriter, r *http.Request) {
-		// The CSRF error is available via the request context's error
-		http.Error(w, "CSRF validation failed", http.StatusForbidden)
+		switch {
+		case errors.Is(dorman.CSRFError(r), dorman.ErrCSRFTokenMissing):
+			http.Error(w, "CSRF token missing", http.StatusForbidden)
+		case errors.Is(dorman.CSRFError(r), dorman.ErrCSRFTokenInvalid):
+			http.Error(w, "CSRF token invalid", http.StatusForbidden)
+		default:
+			http.Error(w, "CSRF validation failed", http.StatusForbidden)
+		}
 	},
 })
 ```

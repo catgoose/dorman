@@ -21,6 +21,10 @@ type csrfTokenKeyType struct{}
 
 var csrfTokenCtxKey csrfTokenKeyType
 
+type csrfErrorKeyType struct{}
+
+var csrfErrorCtxKey csrfErrorKeyType
+
 // csrfMasker is stored on the context; it holds the raw HMAC bytes and the
 // maskToken function so that GetToken can apply a fresh pad on every call.
 type csrfMasker struct {
@@ -175,7 +179,13 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 		return token
 	}
 
-	fail := func(w http.ResponseWriter, r *http.Request) {
+	// fail writes the CSRF rejection response. When cause is non-nil, it is
+	// attached to the request context so that the configured ErrorHandler can
+	// retrieve it via [CSRFError].
+	fail := func(w http.ResponseWriter, r *http.Request, cause error) {
+		if cause != nil {
+			r = r.WithContext(context.WithValue(r.Context(), csrfErrorCtxKey, cause))
+		}
 		if cfg.ErrorHandler != nil {
 			cfg.ErrorHandler(w, r)
 			return
@@ -279,14 +289,17 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 			} else {
 				// Unsafe method: validate Origin header if configured.
 				if cfg.ValidateOrigin && !checkOrigin(r) {
-					fail(w, r)
+					// Origin-check failures intentionally leave the cause unset:
+					// there is no exported sentinel for origin-check failures
+					// and inventing one is out of scope for #47.
+					fail(w, r, nil)
 					return
 				}
 
 				// Unsafe method: must have existing cookie nonce.
 				c, err := r.Cookie(cfg.CookieName)
 				if err != nil || c.Value == "" {
-					fail(w, r)
+					fail(w, r, ErrCSRFTokenMissing)
 					return
 				}
 				nonce = c.Value
@@ -299,21 +312,21 @@ func CSRFProtect(cfg CSRFConfig) func(http.Handler) http.Handler {
 					}
 				}
 				if submitted == "" {
-					fail(w, r)
+					fail(w, r, ErrCSRFTokenMissing)
 					return
 				}
 
 				// Unmask the submitted token to recover the real HMAC bytes.
 				recoveredBytes := unmaskToken(submitted)
 				if recoveredBytes == nil {
-					fail(w, r)
+					fail(w, r, ErrCSRFTokenInvalid)
 					return
 				}
 
 				// Recompute expected HMAC and compare.
 				expected := computeHMAC(nonce)
 				if !hmac.Equal(recoveredBytes, expected) {
-					fail(w, r)
+					fail(w, r, ErrCSRFTokenInvalid)
 					return
 				}
 
@@ -366,4 +379,15 @@ func GetToken(r *http.Request) string {
 		return ""
 	}
 	return tok
+}
+
+// CSRFError returns the CSRF failure cause attached to the request context by
+// [CSRFProtect] before it invokes [CSRFConfig.ErrorHandler]. It returns nil
+// when no cause has been recorded (for example outside of an error handler,
+// or when the failure was an origin-check rejection). Callers can use
+// [errors.Is] to distinguish between [ErrCSRFTokenMissing] and
+// [ErrCSRFTokenInvalid].
+func CSRFError(r *http.Request) error {
+	err, _ := r.Context().Value(csrfErrorCtxKey).(error)
+	return err
 }
